@@ -3,6 +3,8 @@
 ## 1. إدارة المنصة (Supabase + Vercel + GitHub)
 - **GitHub**: أي تحديث ترفعه على فرع `main` يؤدي تلقائياً إلى بناء ونشر نسخة محدثة على Vercel.
 - **Vercel**: يمكنك إدارة متغيرات البيئة (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_SITE_URL`) من إعدادات المشروع في لوحة Vercel.
+  - **ملاحظة مهمة (حماية الوصول Vercel Deployment Protection)**: إعداد الفريق الافتراضي في Vercel مفعّل على `all_except_custom_domains`، مما يعني أن روابط `.vercel.app` تطلب تسجيل دخول Vercel للزوار الخارجيين ما لم يتم ربط نطاق مخصص (Custom Domain) أو إيقاف **Vercel Authentication** من:
+    `Vercel Dashboard -> Project (menuz-23) -> Settings -> Deployment Protection -> Vercel Authentication (Disabled)` لكي يفتح المنيو العام (`/m/indomito`) لأي زائر يمسح QR مباشرة.
 - **Supabase**:
   - الجداول وسياسات الحماية (RLS) مخزنة في `supabase/migrations/`.
   - لأخذ نسخة احتياطية يدوية أو دورية ضمن الخطة المجانية: استخدم أداة `pg_dump` أو تصدير الجداول من لوحة Supabase -> Database -> Backups / SQL Editor.
