@@ -1,0 +1,45 @@
+export const arDictionary = {
+  brand: {
+    name: "مينوز",
+    nameEn: "MENUZ",
+    slogan: "امسح .. اطلب .. واستمتع",
+    sloganEn: "SCAN • ORDER • ENJOY",
+    company: "شركة سامرز للحلول الذكية",
+    companyEn: "Samerz Smart Solutions",
+    location: "اليمن - صنعاء - شارع القيادة",
+    supportPhone: "776951100",
+  },
+  nav: {
+    home: "الرئيسية",
+    about: "من نحن",
+    services: "الخدمات",
+    faq: "الأسئلة الشائعة",
+    contact: "اتصل بنا",
+    login: "دخول الإدارة",
+    installApp: "تثبيت التطبيق",
+  },
+  menu: {
+    story: "قصتنا",
+    featured: "الأصناف المميزة",
+    offers: "العروض الخاصة",
+    searchPlaceholder: "ابحث عن صنف أو مكوّن...",
+    allCategories: "الكل",
+    addToCart: "أضف للسلة",
+    unavailable: "غير متوفر",
+    cartTitle: "سلة الطلبات",
+    checkout: "إتمام الطلب وإرسال الفاتورة",
+    emptyCart: "سلتك فارغة حالياً — اختر أصنافك المفضلة من القائمة",
+    cash: "نقداً عند الاستلام",
+    wallet: "محفظة إلكترونية",
+    sendWhatsapp: "إرسال الطلب عبر واتساب",
+    sendSms: "إرسال عبر رسالة نصية (SMS)",
+  },
+  badges: {
+    best_seller: "🔥 الأكثر طلباً",
+    new: "🆕 جديد",
+    limited_offer: "⏰ عرض محدود",
+    unavailable: "🚫 غير متوفر",
+  },
+} as const;
+
+export type Dictionary = typeof arDictionary;
