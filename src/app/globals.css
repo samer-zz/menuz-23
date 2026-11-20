@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-primary: #f6f8fc;
+    --bg-surface: #ffffff;
+    --text-primary: #0b2d5b;
+    --text-muted: #4b5e7a;
+    --border-subtle: rgba(11, 45, 91, 0.12);
+  }
+
+  .dark {
+    --bg-primary: #040e21;
+    --bg-surface: #071a38;
+    --text-primary: #f8fafc;
+    --text-muted: #94a3b8;
+    --border-subtle: rgba(255, 255, 255, 0.08);
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-feature-settings: "ss01", "cv01";
+    overflow-x: hidden;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    @apply bg-white/80 dark:bg-[#071a38]/75 backdrop-blur-xl border border-navy-700/10 dark:border-white/10 shadow-lg dark:shadow-navy-card;
+  }
+
+  .glass-card {
+    @apply bg-white/90 dark:bg-[#092044]/70 backdrop-blur-lg border border-navy-700/10 dark:border-white/10 transition-all duration-300;
+  }
+
+  .text-gradient-orange {
+    @apply bg-gradient-to-l from-[#FF9E2C] via-[#FF7A00] to-[#E66400] bg-clip-text text-transparent;
+  }
+
+  .bg-brand-gradient {
+    background: linear-gradient(135deg, #0b2d5b 0%, #040e21 100%);
+  }
+
+  .bg-orange-gradient {
+    background: linear-gradient(135deg, #ff9e2c 0%, #ff7a00 55%, #e66400 100%);
+  }
+
+  .menuz-grid-bg {
+    background-image: radial-gradient(
+      rgba(255, 122, 0, 0.14) 1px,
+      transparent 1px
+    );
+    background-size: 28px 28px;
+  }
+}
+
+/* Hide scrollbars cleanly on horizontal sticky category strips */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
