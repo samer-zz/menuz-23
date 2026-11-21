@@ -29,6 +29,7 @@ import type {
   Offer,
   Profile,
   Tenant,
+  TenantNotification,
   Wallet,
 } from "@/types/database";
 
@@ -41,6 +42,7 @@ export function ClientDashboardClient({
   items,
   offers,
   wallets,
+  notifications = [],
   events,
 }: {
   profile: Profile;
@@ -49,6 +51,7 @@ export function ClientDashboardClient({
   items: MenuItem[];
   offers: Offer[];
   wallets: Wallet[];
+  notifications?: TenantNotification[];
   events: AnalyticsEvent[];
 }) {
   const router = useRouter();
@@ -145,8 +148,8 @@ export function ClientDashboardClient({
             <div className="flex items-center gap-2.5 text-sm font-bold text-amber-300">
               <AlertTriangle className="w-5 h-5 shrink-0" />
               <span>
-                تنبيه أمني: أنت تستخدم كلمة المرور الأولية. يرجى تغييرها فوراً
-                لحماية حسابك.
+                تنبيه أمني: أنت تستخدم كلمة المرور الأولية. يُلزم بتغيير كلمة
+                المرور خلال 72 ساعة لحماية حسابك.
               </span>
             </div>
             <button
@@ -203,6 +206,7 @@ export function ClientDashboardClient({
                 items={items}
                 offers={offers}
                 wallets={wallets}
+                notifications={notifications}
               />
             )}
 

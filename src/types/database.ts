@@ -27,6 +27,7 @@ export interface Tenant {
   accent_color: string;
   currency: string;
   is_active: boolean;
+  is_demo: boolean;
   suspended_message: string;
   created_at: string;
   updated_at: string;
@@ -94,6 +95,15 @@ export interface Wallet {
   logo_url: string | null;
   is_active: boolean;
   sort_order: number;
+  created_at: string;
+}
+
+export interface TenantNotification {
+  id: string;
+  tenant_id: string;
+  title: string;
+  body: string;
+  expires_at: string;
   created_at: string;
 }
 

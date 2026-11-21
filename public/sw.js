@@ -1,4 +1,4 @@
-const CACHE_NAME = "menuz-pwa-v1";
+const CACHE_NAME = "menuz-pwa-v3";
 const STATIC_ASSETS = [
   "/",
   "/offline",
@@ -44,11 +44,16 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
   // Skip auth/admin APIs from offline caching
-  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/admin") || url.pathname.startsWith("/dashboard")) {
+  if (
+    url.pathname.startsWith("/api/") ||
+    url.pathname.startsWith("/admin") ||
+    url.pathname.startsWith("/dashboard") ||
+    url.pathname.startsWith("/login")
+  ) {
     return;
   }
 
-  // Navigation requests: Network first, fallback to cache then /offline
+  // Navigation requests: Network first, fallback to cached route (including /m/[slug]) then /offline
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request)

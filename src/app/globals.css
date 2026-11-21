@@ -40,6 +40,10 @@
     @apply bg-white/90 dark:bg-[#092044]/70 backdrop-blur-lg border border-navy-700/10 dark:border-white/10 transition-all duration-300;
   }
 
+  .neu-surface {
+    @apply bg-slate-100/90 dark:bg-[#061631] border border-white/60 dark:border-white/[0.06] shadow-[6px_6px_16px_rgba(11,45,91,0.08),-4px_-4px_12px_rgba(255,255,255,0.85)] dark:shadow-[8px_8px_20px_rgba(2,8,20,0.65),-4px_-4px_14px_rgba(16,49,99,0.22)];
+  }
+
   .text-gradient-orange {
     @apply bg-gradient-to-l from-[#FF9E2C] via-[#FF7A00] to-[#E66400] bg-clip-text text-transparent;
   }
@@ -53,12 +57,58 @@
   }
 
   .menuz-grid-bg {
-    background-image: radial-gradient(
-      rgba(255, 122, 0, 0.14) 1px,
-      transparent 1px
-    );
-    background-size: 28px 28px;
+    background-image:
+      radial-gradient(rgba(255, 122, 0, 0.14) 1px, transparent 1px),
+      linear-gradient(135deg, rgba(11, 45, 91, 0.04) 25%, transparent 25%);
+    background-size: 28px 28px, 56px 56px;
   }
+
+  .menuz-fold-pattern {
+    background-image: linear-gradient(
+      125deg,
+      rgba(255, 122, 0, 0.08) 0%,
+      rgba(255, 122, 0, 0) 42%,
+      rgba(11, 45, 91, 0.12) 100%
+    );
+  }
+}
+
+/* CSS-only <=1s Luxury Welcome Splash (never blocks interaction or content load) */
+@keyframes menuzSplashReveal {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+    visibility: visible;
+  }
+  72% {
+    opacity: 1;
+    transform: scale(1.015);
+    visibility: visible;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.05);
+    visibility: hidden;
+  }
+}
+
+@keyframes menuzSplashBar {
+  0% {
+    transform: scaleX(0.15);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+.animate-menuz-splash {
+  animation: menuzSplashReveal 0.9s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  pointer-events: none;
+}
+
+.animate-menuz-splash-bar {
+  transform-origin: right center;
+  animation: menuzSplashBar 0.78s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 /* Hide scrollbars cleanly on horizontal sticky category strips */

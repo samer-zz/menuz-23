@@ -8,6 +8,7 @@ import type {
   Offer,
   Profile,
   Tenant,
+  TenantNotification,
   Wallet,
 } from "@/types/database";
 
@@ -39,10 +40,11 @@ export default async function DashboardPage() {
   let items: MenuItem[] = [];
   let offers: Offer[] = [];
   let wallets: Wallet[] = [];
+  let notifications: TenantNotification[] = [];
   let events: AnalyticsEvent[] = [];
 
   if (profile.tenant_id) {
-    const [tRes, cRes, iRes, oRes, wRes, eRes] = await Promise.all([
+    const [tRes, cRes, iRes, oRes, wRes, nRes, eRes] = await Promise.all([
       supabase
         .from("tenants")
         .select("*")
@@ -69,6 +71,12 @@ export default async function DashboardPage() {
         .eq("tenant_id", profile.tenant_id)
         .order("sort_order", { ascending: true }),
       supabase
+        .from("notifications")
+        .select("*")
+        .eq("tenant_id", profile.tenant_id)
+        .order("created_at", { ascending: false })
+        .limit(50),
+      supabase
         .from("analytics_events")
         .select("*")
         .eq("tenant_id", profile.tenant_id)
@@ -81,6 +89,7 @@ export default async function DashboardPage() {
     items = (iRes.data as MenuItem[]) ?? [];
     offers = (oRes.data as Offer[]) ?? [];
     wallets = (wRes.data as Wallet[]) ?? [];
+    notifications = (nRes.data as TenantNotification[]) ?? [];
     events = (eRes.data as AnalyticsEvent[]) ?? [];
   }
 
@@ -92,6 +101,7 @@ export default async function DashboardPage() {
       items={items}
       offers={offers}
       wallets={wallets}
+      notifications={notifications}
       events={events}
     />
   );

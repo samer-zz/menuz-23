@@ -1,7 +1,8 @@
 "use client";
 
+import React, { useState } from "react";
 import Link from "next/link";
-import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   Zap,
@@ -11,24 +12,40 @@ import {
   QrCode,
   ShoppingBag,
   ShieldCheck,
-  Smartphone,
   Sparkles,
   ArrowLeft,
   Wallet,
   MessageCircle,
   CheckCircle2,
+  Gift,
+  LayoutGrid,
+  List,
+  Bell,
+  Play,
+  Loader2,
+  Plus,
 } from "lucide-react";
 import { Navbar } from "@/components/layout/navbar";
 import { Footer } from "@/components/layout/footer";
-import { MenuzLogo, MenuzMonogram, SamerzLogo } from "@/components/ui/brand-logo";
-import { PwaInstallButton } from "@/components/pwa/install-button";
+import {
+  MenuzGeometricAccent,
+  MenuzLogo,
+  MenuzMonogram,
+  SamerzLogo,
+} from "@/components/ui/brand-logo";
+import { useApp } from "@/components/providers/theme-provider";
+import { cn } from "@/lib/utils";
 
 const fadeUp = {
   hidden: { opacity: 0, y: 24 },
   visible: (i = 0) => ({
     opacity: 1,
     y: 0,
-    transition: { duration: 0.55, delay: i * 0.08, ease: [0.22, 1, 0.36, 1] as const },
+    transition: {
+      duration: 0.55,
+      delay: i * 0.08,
+      ease: [0.22, 1, 0.36, 1] as const,
+    },
   }),
 };
 
@@ -36,17 +53,17 @@ const whyFeatures = [
   {
     icon: Zap,
     title: "سرعة فائقة وتصفح سلس",
-    desc: "فتح فوري للمنيو عند مسح QR في أقل من ثانية، مع تحميل كسول ذكي للصور ودعم العمل دون اتصال (PWA).",
+    desc: "فتح فوري للمنيو عند مسح QR في أقل من ثانية، مع تحميل كسول ذكي للصور ودعم العمل كتطبيق مستقل على الهاتف.",
   },
   {
     icon: LayoutDashboard,
     title: "لوحة تحكم مستقرة وسهلة",
-    desc: "إدارة الأقسام والأصناف والأسعار والعروض المجدولة من أي جوال أو حاسوب بواجهة عربية احترافية.",
+    desc: "إدارة الأقسام والأصناف والأسعار والعروض المجدولة والإشعارات الفورية من أي جوال أو حاسوب بواجهة عربية احترافية.",
   },
   {
     icon: RefreshCw,
-    title: "تحديثات لحظية فورية",
-    desc: "عدّل الأسعار أو أوقف صنفاً غير متوفر أو أطلق عرضاً محدوداً في ثوانٍ ليظهر فوراً لكل العملاء.",
+    title: "تحديثات وإشعارات لحظية",
+    desc: "عدّل الأسعار أو أرسل إشعار عرض حي داخل المنيو ليصل لضيوفك فوراً دون إعادة تحميل الصفحة.",
   },
   {
     icon: BarChart3,
@@ -60,8 +77,8 @@ const whyFeatures = [
   },
   {
     icon: ShieldCheck,
-    title: "عزل أمني صارم وأداء سحابي",
-    desc: "بنية متعددة الجهات محمية بسياسات Row Level Security وتشفير كامل للبيانات وصلاحيات دقيقة.",
+    title: "عزل أمني صارم وأداء فائق",
+    desc: "بنية متعددة الجهات بعزل تام لبيانات كل مطعم، حماية متقدمة لتسجيل الدخول، وضغط ذكي للصور قبل الرفع.",
   },
 ];
 
@@ -70,13 +87,13 @@ const workflowSteps = [
     step: "01",
     icon: QrCode,
     title: "امسح رمز الـ QR",
-    desc: "يمسح العميل الرمز المطبوع على الطاولة أو العبوة دون الحاجة لتحميل أي تطبيق إضافي.",
+    desc: "يمسح العميل الرمز المطبوع على الطاولة أو العبوة، أو يثبّت منيو مطعمك مباشرة على هاتفه.",
   },
   {
     step: "02",
     icon: ShoppingBag,
     title: "تصفح واطلب بكل راحة",
-    desc: "يستعرض الأصناف والصور والعروض المميزة، ويضيف طلباته للسلة مع اختيار الدفع المناسب.",
+    desc: "يستعرض الأصناف بالعرض المفضل لديه (بطاقات، قائمة، أو كلاسيكي) ويضيف طلباته للسلة مع اختيار الدفع.",
   },
   {
     step: "03",
@@ -86,7 +103,37 @@ const workflowSteps = [
   },
 ];
 
+const interactivePreviewItems = [
+  { name: "برجر سماش دبل", cat: "وجبات سريعة", price: 1800, badge: "🔥 الأكثر طلباً" },
+  { name: "آيس سبانيش لاتيه", cat: "مشروبات", price: 1100, badge: "🆕 جديد" },
+  { name: "تشيز كيك توت بري", cat: "حلويات", price: 1400, badge: "⭐ مميز" },
+];
+
 export function LandingView() {
+  const router = useRouter();
+  const { toast } = useApp();
+  const [creatingDemo, setCreatingDemo] = useState(false);
+  const [previewMode, setPreviewMode] = useState<"cards" | "list">("cards");
+  const [previewCartCount, setPreviewCartCount] = useState(1);
+
+  const handleOpenDemo = async () => {
+    setCreatingDemo(true);
+    try {
+      const res = await fetch("/api/demo/ensure", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.url) {
+        toast("جاري فتح المنيو التجريبي التفاعلي...", "success");
+        router.push(data.url);
+        return;
+      }
+      router.push("/m/demo");
+    } catch {
+      router.push("/m/demo");
+    } finally {
+      setCreatingDemo(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar />
@@ -94,9 +141,10 @@ export function LandingView() {
       <main className="flex-1">
         {/* HERO SECTION */}
         <section className="relative overflow-hidden pt-12 pb-20 lg:pt-20 lg:pb-28 menuz-grid-bg">
-          {/* Ambient Brand Glows */}
-          <div className="pointer-events-none absolute -top-32 right-[-10%] w-[520px] h-[520px] rounded-full bg-brand-orange/15 blur-[130px]" />
+          {/* Ambient Brand Glows + Logo-Inspired Geometric Accent */}
+          <div className="pointer-events-none absolute -top-32 right-[-10%] w-[540px] h-[540px] rounded-full bg-brand-orange/15 blur-[130px]" />
           <div className="pointer-events-none absolute bottom-0 left-[-10%] w-[520px] h-[520px] rounded-full bg-navy-600/30 blur-[140px]" />
+          <MenuzGeometricAccent className="hidden lg:block absolute top-8 left-8 w-56 h-56" />
 
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
@@ -105,18 +153,26 @@ export function LandingView() {
                 initial="hidden"
                 animate="visible"
                 variants={fadeUp}
-                className="lg:col-span-7 space-y-7"
+                className="lg:col-span-7 space-y-6"
               >
-                <div className="inline-flex items-center gap-2.5 rounded-full px-4 py-2 glass-panel text-xs sm:text-sm font-semibold">
-                  <span className="w-2 h-2 rounded-full bg-brand-orange animate-pulse" />
-                  <span className="text-navy-700 dark:text-slate-200">
-                    من تطوير شركة سامرز للحلول الذكية
-                  </span>
-                  <span className="text-brand-orange font-bold">•</span>
-                  <span className="text-brand-orange font-bold">MENUZ v2.0</span>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <div className="inline-flex items-center gap-2.5 rounded-full px-4 py-2 glass-panel text-xs sm:text-sm font-semibold">
+                    <span className="w-2 h-2 rounded-full bg-brand-orange animate-pulse" />
+                    <span className="text-navy-700 dark:text-slate-200">
+                      شركة سامرز للحلول الذكية
+                    </span>
+                    <span className="text-brand-orange font-bold">•</span>
+                    <span className="text-brand-orange font-black">MENUZ v3.0</span>
+                  </div>
+
+                  {/* Free Trial 1-Month Offer Badge */}
+                  <div className="inline-flex items-center gap-2 rounded-full px-4 py-2 bg-emerald-500/15 border border-emerald-500/35 text-emerald-500 dark:text-emerald-300 text-xs sm:text-sm font-extrabold">
+                    <Gift className="w-4 h-4 shrink-0" />
+                    <span>أول منيو مجاناً لمدة شهر</span>
+                  </div>
                 </div>
 
-                <h1 className="font-display text-4xl sm:text-5xl lg:text-6xl font-black leading-[1.18] tracking-tight text-navy-700 dark:text-white">
+                <h1 className="font-display text-4xl sm:text-5xl lg:text-6xl font-black leading-[1.16] tracking-tight text-navy-700 dark:text-white">
                   حوّل قائمة مطعمك إلى{" "}
                   <span className="text-gradient-orange">تجربة رقمية فاخرة</span>
                 </h1>
@@ -124,38 +180,40 @@ export function LandingView() {
                 <p className="text-base sm:text-lg text-navy-600 dark:text-slate-300 leading-relaxed max-w-2xl">
                   منصة <strong className="text-brand-orange">مينوز | MENUZ</strong>{" "}
                   تمنح مطعمك أو مقهاك منيو تفاعلياً فائق السرعة عبر رمز QR، مع
-                  سلة طلبات ذكية، دعم المحافظ الإلكترونية، إرسال الفواتير عبر
-                  الواتساب، ولوحة تحكم سحابية متكاملة.
+                  تثبيت كتطبيق مستقل لكل مطعم، إشعارات فورية حية، سلة طلبات ذكية،
+                  وفواتير واتساب احترافية.
                 </p>
 
                 <div className="flex flex-wrap items-center gap-3.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleOpenDemo}
+                    disabled={creatingDemo}
+                    className="inline-flex items-center gap-2.5 rounded-2xl px-7 py-4 text-base font-extrabold bg-orange-gradient text-white shadow-orange-glow hover:brightness-110 transition-all disabled:opacity-70"
+                  >
+                    {creatingDemo ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Play className="w-5 h-5 fill-current" />
+                    )}
+                    <span>إنشاء منيو تجريبي</span>
+                  </button>
+
                   <Link
                     href="/contact"
-                    className="inline-flex items-center gap-2.5 rounded-2xl px-7 py-4 text-base font-extrabold bg-orange-gradient text-white shadow-orange-glow hover:brightness-110 transition-all"
+                    className="inline-flex items-center gap-2 rounded-2xl px-6 py-4 text-base font-bold glass-panel hover:border-brand-orange/60 transition"
                   >
-                    <Sparkles className="w-5 h-5" />
+                    <Sparkles className="w-5 h-5 text-brand-orange" />
                     <span>اطلب الخدمة لمنشأتك</span>
                     <ArrowLeft className="w-4 h-4" />
                   </Link>
-
-                  <Link
-                    href="/services"
-                    className="inline-flex items-center gap-2 rounded-2xl px-6 py-4 text-base font-bold glass-panel hover:border-brand-orange/60 transition"
-                  >
-                    <span>استكشف المميزات</span>
-                  </Link>
-
-                  <PwaInstallButton
-                    variant="outline"
-                    className="py-4 px-5 rounded-2xl"
-                  />
                 </div>
 
-                <div className="pt-4 flex flex-wrap items-center gap-6 text-xs sm:text-sm text-navy-600 dark:text-slate-300">
+                <div className="pt-3 flex flex-wrap items-center gap-5 text-xs sm:text-sm text-navy-600 dark:text-slate-300">
                   {[
-                    "دعم عربي RTL متكامل",
-                    "يعمل كتطبيق جوال PWA",
-                    "تحديثات لحظية بدون طباعة",
+                    "أول منيو مجاناً لمدة شهر",
+                    "تثبيت PWA مباشر لكل مطعم",
+                    "إشعارات وعروض فورية",
                   ].map((item) => (
                     <div key={item} className="flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 text-brand-orange shrink-0" />
@@ -165,7 +223,7 @@ export function LandingView() {
                 </div>
               </motion.div>
 
-              {/* Hero Interactive Showcase Frame */}
+              {/* Hero Live Interactive Phone Showcase */}
               <motion.div
                 initial={{ opacity: 0, scale: 0.94, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -173,53 +231,154 @@ export function LandingView() {
                 className="lg:col-span-5"
               >
                 <div className="relative mx-auto max-w-[420px]">
-                  {/* Outer glow ring */}
-                  <div className="absolute -inset-3 rounded-[2.5rem] bg-gradient-to-tr from-brand-orange/30 via-navy-500/20 to-brand-amber/20 blur-2xl" />
+                  <div className="absolute -inset-4 rounded-[2.8rem] bg-gradient-to-tr from-brand-orange/35 via-navy-500/20 to-brand-amber/20 blur-2xl" />
 
-                  <div className="relative rounded-[2.2rem] p-5 glass-panel border border-white/15 bg-gradient-to-b from-[#0B2D5B]/95 to-[#040E21]/95 text-white shadow-2xl">
-                    {/* Top simulated notch & header */}
-                    <div className="flex items-center justify-between pb-4 border-b border-white/10">
-                      <MenuzLogo forceTheme="dark" height={36} />
-                      <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-brand-orange/20 text-brand-amber border border-brand-orange/30">
-                        امسح .. اطلب .. واستمتع
+                  <div className="relative rounded-[2.4rem] p-5 border border-white/15 bg-gradient-to-b from-[#0B2D5B] to-[#040E21] text-white shadow-2xl space-y-4 overflow-hidden">
+                    <div className="pointer-events-none absolute -top-10 -left-10 w-36 h-36 rounded-full bg-brand-orange/15 blur-2xl" />
+
+                    {/* Simulated Top Bar */}
+                    <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                      <MenuzLogo forceTheme="dark" height={32} />
+                      <div className="flex items-center gap-1.5">
+                        <span className="p-1.5 rounded-lg bg-white/10 relative">
+                          <Bell className="w-3.5 h-3.5 text-brand-amber" />
+                          <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-brand-orange" />
+                        </span>
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-brand-orange/20 text-brand-amber border border-brand-orange/30">
+                          معاينة تفاعلية
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Interactive Mode Switcher inside Preview */}
+                    <div className="flex items-center justify-between rounded-xl px-3 py-2 bg-white/5 border border-white/10">
+                      <span className="text-[11px] font-bold text-slate-300">
+                        جرّب تبديل العرض:
                       </span>
-                    </div>
-
-                    {/* Brand showcase preview */}
-                    <div className="mt-4 rounded-2xl overflow-hidden border border-white/10 bg-[#040E21]">
-                      <Image
-                        src="/branding/menuz_brand_showcase.png"
-                        alt="عرض هوية منصة مينوز العصرية"
-                        width={600}
-                        height={400}
-                        priority
-                        className="w-full h-auto object-cover"
-                      />
-                    </div>
-
-                    {/* Feature chips inside preview */}
-                    <div className="mt-4 grid grid-cols-2 gap-2.5 text-xs">
-                      {[
-                        { icon: Smartphone, text: "تصميم متجاوب للجوال" },
-                        { icon: QrCode, text: "توليد QR فوري" },
-                        { icon: Wallet, text: "محافظ إلكترونية" },
-                        { icon: BarChart3, text: "إحصائيات دقيقة" },
-                      ].map((chip) => (
-                        <div
-                          key={chip.text}
-                          className="flex items-center gap-2 rounded-xl px-3 py-2.5 bg-white/5 border border-white/10"
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewMode("cards")}
+                          className={cn(
+                            "px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 transition",
+                            previewMode === "cards"
+                              ? "bg-orange-gradient text-white"
+                              : "text-slate-300 hover:bg-white/10"
+                          )}
                         >
-                          <chip.icon className="w-4 h-4 text-brand-orange shrink-0" />
-                          <span className="font-medium text-slate-200">
-                            {chip.text}
-                          </span>
+                          <LayoutGrid className="w-3 h-3" />
+                          <span>بطاقات</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewMode("list")}
+                          className={cn(
+                            "px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 transition",
+                            previewMode === "list"
+                              ? "bg-orange-gradient text-white"
+                              : "text-slate-300 hover:bg-white/10"
+                          )}
+                        >
+                          <List className="w-3 h-3" />
+                          <span>قائمة</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Simulated Menu Items */}
+                    <div
+                      className={cn(
+                        "grid gap-2.5",
+                        previewMode === "cards" ? "grid-cols-1" : "grid-cols-1"
+                      )}
+                    >
+                      {interactivePreviewItems.map((item) => (
+                        <div
+                          key={item.name}
+                          className={cn(
+                            "rounded-2xl bg-white/[0.06] border border-white/10 hover:border-brand-orange/40 transition flex items-center justify-between gap-3",
+                            previewMode === "cards" ? "p-3" : "px-3 py-2"
+                          )}
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-brand-orange/20 text-brand-amber font-bold">
+                                {item.badge}
+                              </span>
+                              <span className="text-[10px] text-slate-400">
+                                {item.cat}
+                              </span>
+                            </div>
+                            <p className="font-extrabold text-sm mt-1 truncate">
+                              {item.name}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-2.5 shrink-0">
+                            <span className="font-black text-xs text-brand-amber">
+                              {item.price.toLocaleString()} ر.ي
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPreviewCartCount((c) => c + 1)
+                              }
+                              className="w-7 h-7 rounded-xl bg-orange-gradient text-white flex items-center justify-center hover:scale-105 transition"
+                              aria-label={`إضافة ${item.name}`}
+                            >
+                              <Plus className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
                       ))}
+                    </div>
+
+                    {/* Simulated Live Cart Footer */}
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={handleOpenDemo}
+                        className="flex-1 rounded-2xl px-4 py-3 bg-orange-gradient text-white text-xs font-extrabold flex items-center justify-between shadow-orange-glow hover:brightness-110 transition"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-lg bg-white/20 font-black">
+                            {previewCartCount}
+                          </span>
+                          <span>افتح المنيو التجريبي الكامل</span>
+                        </span>
+                        <ArrowLeft className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 </div>
               </motion.div>
             </div>
+          </div>
+        </section>
+
+        {/* FREE TRIAL SPOTLIGHT BANNER */}
+        <section className="py-6 border-y border-navy-700/10 dark:border-white/10 bg-gradient-to-l from-brand-orange/15 via-navy-700/10 to-brand-orange/10">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-orange-gradient text-white flex items-center justify-center shadow-orange-glow shrink-0">
+                <Gift className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="font-display font-black text-base sm:text-lg">
+                  عرض الانطلاق: أول منيو مجاناً لمدة شهر كامل
+                </p>
+                <p className="text-xs sm:text-sm text-navy-600 dark:text-slate-300">
+                  انقل منشأتك إلى مينوز v3.0 وجرّب لوحة التحكم والتحليلات بدون
+                  أي التزام مالي لأول 30 يوماً.
+                </p>
+              </div>
+            </div>
+            <Link
+              href="/contact"
+              className="shrink-0 rounded-xl px-5 py-2.5 text-sm font-extrabold bg-orange-gradient text-white shadow-orange-glow hover:brightness-110 transition"
+            >
+              احصل على شهرك المجاني
+            </Link>
           </div>
         </section>
 
@@ -254,7 +413,7 @@ export function LandingView() {
                   whileInView="visible"
                   viewport={{ once: true, margin: "-40px" }}
                   variants={fadeUp}
-                  className="group rounded-3xl p-7 glass-card hover:border-brand-orange/50 hover:-translate-y-1"
+                  className="group rounded-3xl p-7 glass-card hover:border-brand-orange/50 hover:-translate-y-1 menuz-fold-pattern"
                 >
                   <div className="w-12 h-12 rounded-2xl bg-brand-orange/15 border border-brand-orange/30 flex items-center justify-center mb-5 group-hover:bg-orange-gradient group-hover:text-white transition-all">
                     <feat.icon className="w-6 h-6 text-brand-orange group-hover:text-white transition-colors" />
@@ -365,7 +524,7 @@ export function LandingView() {
                     </p>
                     <p className="text-xs text-slate-300 leading-relaxed">
                       نقوم بإعداد هويتك وأقسامك وأصنافك وتسليمك حساب الإدارة ورمز
-                      الـ QR جاهزاً للطباعة.
+                      الـ QR جاهزاً للطباعة، مع شهرك الأول مجاناً.
                     </p>
                     <a
                       href="tel:776951100"

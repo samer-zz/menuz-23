@@ -45,6 +45,8 @@ const tenantSchema = z.object({
   accent_color: z.string().default("#FF7A00"),
   currency: z.string().default("ر.ي"),
   is_active: z.boolean().default(true),
+  is_demo: z.boolean().optional(),
+  seedDemoTemplate: z.boolean().optional(),
   suspended_message: z.string().optional(),
 });
 
@@ -65,7 +67,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { id: _unusedId, ...payload } = parsed.data;
+  const { id: _unusedId, seedDemoTemplate, ...payload } = parsed.data;
   void _unusedId;
 
   const { data, error } = await ctx.supabase
@@ -78,13 +80,70 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
 
+  if (seedDemoTemplate && data?.id) {
+    const { data: catMain } = await ctx.supabase
+      .from("categories")
+      .insert({
+        tenant_id: data.id,
+        name: "وجبات مميزة",
+        description: "قالب مبدئي — يمكنك تعديله أو استبداله",
+        sort_order: 1,
+        is_active: true,
+      })
+      .select("id")
+      .single();
+
+    const { data: catDrinks } = await ctx.supabase
+      .from("categories")
+      .insert({
+        tenant_id: data.id,
+        name: "المشروبات",
+        description: "مشروبات باردة وساخنة",
+        sort_order: 2,
+        is_active: true,
+      })
+      .select("id")
+      .single();
+
+    if (catMain && catDrinks) {
+      await ctx.supabase.from("menu_items").insert([
+        {
+          tenant_id: data.id,
+          category_id: catMain.id,
+          name: "صنف تجريبي أول",
+          ingredients: "وصف مكونات الصنف يظهر هنا",
+          price: 1000,
+          is_available: true,
+          is_featured: true,
+          badges: ["best_seller"],
+          sort_order: 1,
+        },
+        {
+          tenant_id: data.id,
+          category_id: catDrinks.id,
+          name: "مشروب تجريبي",
+          ingredients: "منعش وطازج",
+          price: 400,
+          is_available: true,
+          is_featured: false,
+          badges: ["new"],
+          sort_order: 2,
+        },
+      ]);
+    }
+  }
+
   await writeAuditLog({
     actorId: ctx.user.id,
     actorEmail: ctx.user.email ?? null,
     action: "create_tenant",
     targetType: "tenant",
     targetId: data.id,
-    details: { slug: data.slug, name_ar: data.name_ar },
+    details: {
+      slug: data.slug,
+      name_ar: data.name_ar,
+      seedDemoTemplate: Boolean(seedDemoTemplate),
+    },
   });
 
   return NextResponse.json({ ok: true, tenant: data });

@@ -10,6 +10,7 @@ import type {
   Offer,
   Profile,
   Tenant,
+  TenantNotification,
   Wallet,
 } from "@/types/database";
 
@@ -40,6 +41,7 @@ export default async function AdminPage() {
     itemsRes,
     offersRes,
     walletsRes,
+    notificationsRes,
     eventsRes,
     auditRes,
     messagesRes,
@@ -69,6 +71,11 @@ export default async function AdminPage() {
       .select("*")
       .order("sort_order", { ascending: true }),
     supabase
+      .from("notifications")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200),
+    supabase
       .from("analytics_events")
       .select("*")
       .order("created_at", { ascending: false })
@@ -94,6 +101,7 @@ export default async function AdminPage() {
       items={(itemsRes.data as MenuItem[]) ?? []}
       offers={(offersRes.data as Offer[]) ?? []}
       wallets={(walletsRes.data as Wallet[]) ?? []}
+      notifications={(notificationsRes.data as TenantNotification[]) ?? []}
       events={(eventsRes.data as AnalyticsEvent[]) ?? []}
       auditLogs={(auditRes.data as AuditLog[]) ?? []}
       messages={(messagesRes.data as ContactMessage[]) ?? []}
