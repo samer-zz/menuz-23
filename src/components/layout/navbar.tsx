@@ -12,9 +12,9 @@ import {
   LogIn,
   Globe,
   Sparkles,
+  Eye,
 } from "lucide-react";
 import { MenuzLogo } from "@/components/ui/brand-logo";
-import { PwaInstallButton } from "@/components/pwa/install-button";
 import { useApp } from "@/components/providers/theme-provider";
 import { cn } from "@/lib/utils";
 
@@ -35,7 +35,10 @@ export function Navbar() {
     <header className="sticky top-0 z-50 border-b border-navy-700/10 dark:border-white/10 bg-white/80 dark:bg-[#040E21]/80 backdrop-blur-2xl">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between gap-4">
         <Link href="/" className="flex items-center gap-3 shrink-0 group">
-          <MenuzLogo height={44} className="transition-transform group-hover:scale-[1.03]" />
+          <MenuzLogo
+            height={44}
+            className="transition-transform group-hover:scale-[1.03]"
+          />
         </Link>
 
         {/* Desktop Links */}
@@ -71,7 +74,10 @@ export function Navbar() {
           <button
             type="button"
             onClick={() =>
-              toast("الواجهة حالياً باللغة العربية — سيتم دعم لغات إضافية قريباً", "info")
+              toast(
+                "الواجهة حالياً باللغة العربية — سيتم دعم لغات إضافية في التحديث القادم",
+                "info"
+              )
             }
             className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border border-navy-700/15 dark:border-white/15 bg-white/70 dark:bg-white/5 text-navy-700 dark:text-slate-200 hover:border-brand-orange/50 transition"
             title="اللغة"
@@ -94,9 +100,13 @@ export function Navbar() {
             )}
           </button>
 
-          <div className="hidden md:block">
-            <PwaInstallButton variant="outline" />
-          </div>
+          <Link
+            href="/m/demo"
+            className="hidden md:inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2.5 text-xs font-bold border border-brand-orange/35 bg-brand-orange/10 text-brand-orange hover:bg-brand-orange/20 transition"
+          >
+            <Eye className="w-4 h-4" />
+            <span>المنيو التجريبي</span>
+          </Link>
 
           <Link
             href="/contact"
@@ -155,7 +165,14 @@ export function Navbar() {
                 );
               })}
               <div className="pt-3 flex flex-wrap items-center gap-2 border-t border-navy-700/10 dark:border-white/10">
-                <PwaInstallButton variant="outline" className="flex-1 justify-center" />
+                <Link
+                  href="/m/demo"
+                  onClick={() => setMobileOpen(false)}
+                  className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold bg-brand-orange/15 text-brand-orange border border-brand-orange/30"
+                >
+                  <Eye className="w-4 h-4" />
+                  <span>المنيو التجريبي</span>
+                </Link>
                 <Link
                   href="/login"
                   onClick={() => setMobileOpen(false)}

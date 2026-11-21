@@ -33,15 +33,23 @@ import {
   Flame,
   CupSoda,
   Sandwich,
+  Bell,
+  LayoutGrid,
+  List,
+  BookOpen,
+  Home,
+  FlaskConical,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useApp } from "@/components/providers/theme-provider";
-import { MenuzLogo } from "@/components/ui/brand-logo";
+import { MenuzLogo, SamerzLogo } from "@/components/ui/brand-logo";
 import { PwaInstallButton } from "@/components/pwa/install-button";
+import { EmptyStateCard } from "@/components/ui/skeletons";
 import {
   buildSmsUrl,
   buildWhatsAppUrl,
   cn,
+  formatArabicDate,
   formatInvoiceMessage,
   formatPrice,
   isOfferCurrentlyActive,
@@ -52,6 +60,7 @@ import type {
   MenuItem,
   Offer,
   Tenant,
+  TenantNotification,
   Wallet,
 } from "@/types/database";
 
@@ -60,36 +69,39 @@ interface CartLine {
   quantity: number;
 }
 
-const BADGE_META: Record<
-  MenuBadge,
-  { label: string; className: string }
-> = {
+type ViewMode = "cards" | "list" | "classic";
+
+const BADGE_META: Record<MenuBadge, { label: string; className: string }> = {
   best_seller: {
     label: "🔥 الأكثر طلباً",
-    className:
-      "bg-amber-500/15 text-amber-400 border-amber-500/30",
+    className: "bg-amber-500/15 text-amber-400 border-amber-500/30",
   },
   new: {
     label: "🆕 جديد",
-    className:
-      "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+    className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
   },
   limited_offer: {
     label: "⏰ عرض محدود",
-    className:
-      "bg-brand-orange/20 text-brand-amber border-brand-orange/35",
+    className: "bg-brand-orange/20 text-brand-amber border-brand-orange/35",
   },
   unavailable: {
     label: "🚫 غير متوفر",
-    className:
-      "bg-rose-500/15 text-rose-400 border-rose-500/30",
+    className: "bg-rose-500/15 text-rose-400 border-rose-500/30",
   },
 };
 
-function DishArtFallback({ name }: { name: string }) {
+function DishArtFallback({
+  name,
+  compact = false,
+}: {
+  name: string;
+  compact?: boolean;
+}) {
   const lower = name.toLowerCase();
   const Icon =
-    lower.includes("كركديه") || lower.includes("عصير") || lower.includes("مشروب")
+    lower.includes("كركديه") ||
+    lower.includes("عصير") ||
+    lower.includes("مشروب")
       ? CupSoda
       : lower.includes("سندوتش") || lower.includes("برجر")
         ? Sandwich
@@ -98,9 +110,24 @@ function DishArtFallback({ name }: { name: string }) {
           : UtensilsCrossed;
 
   return (
-    <div className="w-full h-full bg-gradient-to-br from-[#0B2D5B] via-[#092247] to-[#040E21] flex items-center justify-center relative overflow-hidden">
-      <div className="absolute -bottom-6 -left-6 w-20 h-20 rounded-full bg-brand-orange/20 blur-xl" />
-      <Icon className="w-9 h-9 text-brand-orange/90 relative z-10" />
+    <div className="w-full h-full bg-gradient-to-br from-[#0B2D5B] via-[#081F44] to-[#040E21] flex items-center justify-center relative overflow-hidden">
+      <div className="absolute -top-6 -right-6 w-16 h-16 rounded-full bg-brand-orange/20 blur-xl" />
+      <div className="absolute -bottom-6 -left-6 w-20 h-20 rounded-full bg-brand-amber/20 blur-xl" />
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 opacity-20"
+        style={{
+          backgroundImage:
+            "linear-gradient(135deg, rgba(255,122,0,0.35) 1px, transparent 1px)",
+          backgroundSize: "16px 16px",
+        }}
+      />
+      <Icon
+        className={cn(
+          "text-brand-orange relative z-10 drop-shadow",
+          compact ? "w-6 h-6" : "w-9 h-9"
+        )}
+      />
     </div>
   );
 }
@@ -111,12 +138,14 @@ export function PublicMenuClient({
   items,
   offers,
   wallets,
+  initialNotifications = [],
 }: {
   tenant: Tenant;
   categories: Category[];
   items: MenuItem[];
   offers: Offer[];
   wallets: Wallet[];
+  initialNotifications?: TenantNotification[];
 }) {
   const { theme, toggleTheme, toast } = useApp();
   const [search, setSearch] = useState("");
@@ -124,6 +153,16 @@ export function PublicMenuClient({
   const [activeCategoryId, setActiveCategoryId] = useState<string>(
     categories[0]?.id || ""
   );
+  const [viewMode, setViewMode] = useState<ViewMode>("cards");
+  const [showSplash, setShowSplash] = useState(false);
+
+  // Notifications state (Realtime In-App)
+  const [notifications, setNotifications] = useState<TenantNotification[]>(
+    initialNotifications
+  );
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(initialNotifications.length);
+
   const [storyOpen, setStoryOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null);
   const [cart, setCart] = useState<CartLine[]>([]);
@@ -150,7 +189,55 @@ export function PublicMenuClient({
     [offers]
   );
 
-  // Record 1 menu_scan per browser session for accurate analytics
+  // 1. Dynamic PWA manifest link sync for client-side navigations
+  useEffect(() => {
+    const manifestHref = `/api/manifest/${tenant.slug}`;
+    let link = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "manifest";
+      document.head.appendChild(link);
+    }
+    link.href = manifestHref;
+  }, [tenant.slug]);
+
+  // 2. CSS-only <=1s Welcome Splash once per session
+  useEffect(() => {
+    const key = `menuz-splash-${tenant.slug}`;
+    try {
+      if (!sessionStorage.getItem(key)) {
+        sessionStorage.setItem(key, "1");
+        setShowSplash(true);
+        const timer = setTimeout(() => setShowSplash(false), 950);
+        return () => clearTimeout(timer);
+      }
+    } catch {
+      // ignore sessionStorage errors
+    }
+  }, [tenant.slug]);
+
+  // 3. Load & persist ViewMode in localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("menuz-view-mode") as ViewMode | null;
+      if (saved === "cards" || saved === "list" || saved === "classic") {
+        setViewMode(saved);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const changeViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem("menuz-view-mode", mode);
+    } catch {
+      // ignore
+    }
+  };
+
+  // 4. Record 1 menu_scan per browser session
   useEffect(() => {
     if (!tenant.is_active) return;
     const key = `menuz-scanned-${tenant.id}`;
@@ -166,7 +253,51 @@ export function PublicMenuClient({
       .then(() => {});
   }, [tenant.id, tenant.is_active]);
 
-  // Load persisted cart for this tenant
+  // 5. Subscribe to Supabase Realtime for In-App Notifications
+  useEffect(() => {
+    if (!tenant.is_active) return;
+    const supabase = createClient();
+    const channel = supabase
+      .channel(`notifications-${tenant.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "notifications",
+          filter: `tenant_id=eq.${tenant.id}`,
+        },
+        (payload) => {
+          const incoming = payload.new as TenantNotification;
+          if (new Date(incoming.expires_at).getTime() <= Date.now()) return;
+          setNotifications((prev) => [incoming, ...prev]);
+          setUnreadCount((c) => c + 1);
+          toast(`🔔 ${incoming.title}: ${incoming.body}`, "info");
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "DELETE",
+          schema: "public",
+          table: "notifications",
+          filter: `tenant_id=eq.${tenant.id}`,
+        },
+        (payload) => {
+          const deletedId = (payload.old as { id?: string })?.id;
+          if (deletedId) {
+            setNotifications((prev) => prev.filter((n) => n.id !== deletedId));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [tenant.id, tenant.is_active, toast]);
+
+  // 6. Load & persist cart for this tenant
   useEffect(() => {
     try {
       const raw = localStorage.getItem(`menuz-cart-${tenant.slug}`);
@@ -419,6 +550,16 @@ export function PublicMenuClient({
               <span>تواصل مع المطعم: {tenant.phone}</span>
             </a>
           )}
+
+          <div className="pt-2">
+            <Link
+              href="/"
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-orange hover:underline"
+            >
+              <Home className="w-3.5 h-3.5" />
+              <span>الصفحة الرئيسية العامة</span>
+            </Link>
+          </div>
         </div>
       </main>
     );
@@ -426,9 +567,50 @@ export function PublicMenuClient({
 
   return (
     <div className="min-h-screen flex flex-col pb-28">
+      {/* CSS-ONLY <=1s LUXURY WELCOME SPLASH (never blocks content) */}
+      {showSplash && (
+        <div
+          aria-hidden="true"
+          className="fixed inset-0 z-[90] bg-gradient-to-br from-[#0B2D5B] via-[#061835] to-[#040E21] flex flex-col items-center justify-center gap-5 px-6 animate-menuz-splash"
+        >
+          <div className="flex items-center gap-4">
+            <MenuzLogo forceTheme="dark" height={54} />
+          </div>
+          <div className="text-center space-y-1 text-white">
+            <p className="text-xs tracking-widest text-brand-amber font-bold">
+              أهلاً بكم في
+            </p>
+            <p className="font-display text-2xl font-black">{tenant.name_ar}</p>
+          </div>
+          <div className="w-44 h-1 rounded-full bg-white/15 overflow-hidden">
+            <div className="h-full bg-orange-gradient animate-menuz-splash-bar" />
+          </div>
+        </div>
+      )}
+
+      {/* DEMO MENU BANNER */}
+      {tenant.is_demo && (
+        <div className="bg-navy-900 text-white border-b border-brand-orange/40 py-2 px-4">
+          <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 font-bold text-brand-amber">
+              <FlaskConical className="w-4 h-4 shrink-0" />
+              <span>
+                منيو تجريبي تفاعلي (Demo) — بيانات نموذجية لاستعراض منصة مينوز
+                v3.0
+              </span>
+            </div>
+            <Link
+              href="/contact"
+              className="px-3 py-1 rounded-lg bg-orange-gradient text-white font-extrabold hover:brightness-110 transition"
+            >
+              أنشئ منيو مطعمك مجاناً لمدة شهر
+            </Link>
+          </div>
+        </div>
+      )}
+
       {/* HERO / COVER HEADER */}
       <header className="relative overflow-hidden border-b border-navy-700/10 dark:border-white/10">
-        {/* Background Cover or Brand Gradient */}
         <div
           className="absolute inset-0"
           style={{
@@ -466,8 +648,81 @@ export function PublicMenuClient({
             </Link>
 
             <div className="flex items-center gap-2">
+              {/* In-App Notifications Bell */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNotifOpen((v) => !v);
+                    setUnreadCount(0);
+                  }}
+                  className="relative p-2.5 rounded-xl bg-white/10 backdrop-blur-md border border-white/15 hover:bg-white/20 transition"
+                  aria-label="الإشعارات"
+                  title="الإشعارات"
+                >
+                  <Bell className="w-4 h-4 text-brand-amber" />
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-brand-orange text-[10px] font-black text-white flex items-center justify-center shadow">
+                      {unreadCount}
+                    </span>
+                  )}
+                </button>
+
+                <AnimatePresence>
+                  {notifOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                      className="absolute left-0 mt-2 w-80 max-w-[85vw] rounded-2xl p-4 bg-[#071A38] border border-white/15 text-white shadow-2xl z-50 space-y-3"
+                    >
+                      <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                        <span className="font-extrabold text-xs text-brand-amber flex items-center gap-1.5">
+                          <Bell className="w-3.5 h-3.5" />
+                          <span>إشعارات {tenant.name_ar}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setNotifOpen(false)}
+                          className="p-1 rounded-lg hover:bg-white/10"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {notifications.length === 0 ? (
+                        <p className="text-xs text-slate-300 text-center py-4">
+                          لا توجد إشعارات حالياً.
+                        </p>
+                      ) : (
+                        <div className="space-y-2 max-h-64 overflow-y-auto">
+                          {notifications.map((n) => (
+                            <div
+                              key={n.id}
+                              className="rounded-xl p-3 bg-white/5 border border-white/10 space-y-1"
+                            >
+                              <p className="font-bold text-xs text-brand-amber">
+                                {n.title}
+                              </p>
+                              <p className="text-xs text-slate-200 leading-relaxed">
+                                {n.body}
+                              </p>
+                              <p className="text-[10px] text-slate-400">
+                                {formatArabicDate(n.created_at)}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
               <PwaInstallButton
                 variant="outline"
+                appTitle={tenant.name_ar}
+                label="تثبيت المنيو"
                 className="bg-white/10 border-white/20 text-white hover:bg-white/20"
               />
               <button
@@ -554,7 +809,6 @@ export function PublicMenuClient({
             </div>
           </div>
 
-          {/* Expandable Story */}
           <AnimatePresence>
             {storyOpen && tenant.story && (
               <motion.div
@@ -698,32 +952,67 @@ export function PublicMenuClient({
         </section>
       )}
 
-      {/* STICKY CATEGORIES + SEARCH BAR */}
+      {/* STICKY CATEGORIES + SEARCH + VIEW MODE SWITCHER */}
       <div className="sticky top-0 z-30 mt-5 bg-white/85 dark:bg-[#040E21]/85 backdrop-blur-xl border-y border-navy-700/10 dark:border-white/10">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3 space-y-3">
-          {/* Categories Strip */}
-          {categories.length > 0 && (
-            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-              {categories.map((cat) => {
-                const active = activeCategoryId === cat.id;
-                return (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    onClick={() => scrollToCategory(cat.id)}
-                    className={cn(
-                      "shrink-0 px-4 py-2 rounded-full text-xs sm:text-sm font-bold transition-all",
-                      active
-                        ? "bg-orange-gradient text-white shadow-orange-glow"
-                        : "bg-slate-100 dark:bg-navy-800/80 text-navy-700 dark:text-slate-300 hover:border-brand-orange/50 border border-transparent"
-                    )}
-                  >
-                    {cat.name}
-                  </button>
-                );
-              })}
+          {/* Categories Strip + View Switcher */}
+          <div className="flex items-center justify-between gap-3">
+            {categories.length > 0 ? (
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar flex-1">
+                {categories.map((cat) => {
+                  const active = activeCategoryId === cat.id;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => scrollToCategory(cat.id)}
+                      className={cn(
+                        "shrink-0 px-4 py-2 rounded-full text-xs sm:text-sm font-bold transition-all",
+                        active
+                          ? "bg-orange-gradient text-white shadow-orange-glow"
+                          : "bg-slate-100 dark:bg-navy-800/80 text-navy-700 dark:text-slate-300 hover:border-brand-orange/50 border border-transparent"
+                      )}
+                    >
+                      {cat.name}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex-1" />
+            )}
+
+            {/* View Mode Switcher: Cards / List / Classic */}
+            <div
+              className="shrink-0 inline-flex items-center gap-1 rounded-xl p-1 bg-slate-100 dark:bg-navy-800/80 border border-navy-700/10 dark:border-white/10"
+              role="group"
+              aria-label="تبديل طريقة العرض"
+            >
+              {(
+                [
+                  { key: "cards", icon: LayoutGrid, label: "بطاقات" },
+                  { key: "list", icon: List, label: "قائمة" },
+                  { key: "classic", icon: BookOpen, label: "كلاسيكي" },
+                ] as const
+              ).map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  onClick={() => changeViewMode(m.key)}
+                  title={m.label}
+                  className={cn(
+                    "inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition",
+                    viewMode === m.key
+                      ? "bg-orange-gradient text-white shadow-sm"
+                      : "text-slate-500 dark:text-slate-300 hover:text-brand-orange"
+                  )}
+                >
+                  <m.icon className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{m.label}</span>
+                </button>
+              ))}
             </div>
-          )}
+          </div>
 
           {/* Search & Badge Filter */}
           <div className="flex flex-col sm:flex-row gap-2.5">
@@ -768,13 +1057,11 @@ export function PublicMenuClient({
       {/* MENU CATEGORIES & ITEMS */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-8 space-y-10">
         {categories.length === 0 ? (
-          <div className="rounded-3xl p-12 text-center glass-panel space-y-2">
-            <UtensilsCrossed className="w-10 h-10 text-brand-orange mx-auto" />
-            <h2 className="text-xl font-extrabold">القائمة قيد التحديث</h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400">
-              لم تتم إضافة أصناف في هذا المنيو بعد.
-            </p>
-          </div>
+          <EmptyStateCard
+            icon={UtensilsCrossed}
+            title="القائمة قيد التحديث"
+            description="لم تتم إضافة أصناف في هذا المنيو بعد. تفضل بالعودة قريباً."
+          />
         ) : (
           categories.map((cat) => {
             const catItems = filteredItems.filter(
@@ -804,157 +1091,327 @@ export function PublicMenuClient({
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {catItems.map((item) => {
-                    const unavailable =
-                      !item.is_available || item.badges.includes("unavailable");
-                    const qty = getQty(item.id);
+                {/* VIEW MODE: CARDS (Default) */}
+                {viewMode === "cards" && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {catItems.map((item) => {
+                      const unavailable =
+                        !item.is_available ||
+                        item.badges.includes("unavailable");
+                      const qty = getQty(item.id);
 
-                    return (
-                      <motion.div
-                        key={item.id}
-                        initial={{ opacity: 0, y: 12 }}
-                        whileInView={{ opacity: 1, y: 0 }}
-                        viewport={{ once: true, margin: "-30px" }}
-                        transition={{ duration: 0.3 }}
-                        className={cn(
-                          "group rounded-2xl p-3.5 glass-card flex gap-3.5 items-stretch",
-                          unavailable
-                            ? "opacity-65 grayscale-[40%]"
-                            : "hover:border-brand-orange/45"
-                        )}
-                      >
-                        {/* Thumbnail */}
-                        <div
-                          onClick={() => openItemDetail(item)}
-                          className="w-24 h-24 sm:w-28 sm:h-28 rounded-xl overflow-hidden shrink-0 relative cursor-pointer"
-                        >
-                          {item.image_url ? (
-                            <Image
-                              src={item.image_url}
-                              alt={item.name}
-                              fill
-                              loading="lazy"
-                              className="object-cover group-hover:scale-105 transition-transform duration-300"
-                            />
-                          ) : (
-                            <DishArtFallback name={item.name} />
+                      return (
+                        <motion.div
+                          key={item.id}
+                          initial={{ opacity: 0, y: 12 }}
+                          whileInView={{ opacity: 1, y: 0 }}
+                          viewport={{ once: true, margin: "-30px" }}
+                          transition={{ duration: 0.25 }}
+                          className={cn(
+                            "group rounded-2xl p-3.5 glass-card flex gap-3.5 items-stretch",
+                            unavailable
+                              ? "opacity-65 grayscale-[40%]"
+                              : "hover:border-brand-orange/45"
                           )}
-                        </div>
-
-                        {/* Content */}
-                        <div className="flex-1 min-w-0 flex flex-col justify-between gap-2">
+                        >
                           <div
                             onClick={() => openItemDetail(item)}
-                            className="cursor-pointer space-y-1"
+                            className="w-24 h-24 sm:w-28 sm:h-28 rounded-xl overflow-hidden shrink-0 relative cursor-pointer"
                           >
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              {unavailable && (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border bg-rose-500/15 text-rose-400 border-rose-500/30">
-                                  🚫 غير متوفر
-                                </span>
-                              )}
-                              {item.badges
-                                .filter((b) => b !== "unavailable")
-                                .map((b) => (
-                                  <span
-                                    key={b}
-                                    className={cn(
-                                      "px-2 py-0.5 rounded-full text-[10px] font-bold border",
-                                      BADGE_META[b]?.className
-                                    )}
-                                  >
-                                    {BADGE_META[b]?.label || b}
-                                  </span>
-                                ))}
-                            </div>
-
-                            <h3 className="font-extrabold text-base leading-snug">
-                              {item.name}
-                            </h3>
-
-                            {(item.ingredients || item.description) && (
-                              <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">
-                                {item.ingredients || item.description}
-                              </p>
+                            {item.image_url ? (
+                              <Image
+                                src={item.image_url}
+                                alt={item.name}
+                                fill
+                                loading="lazy"
+                                className="object-cover group-hover:scale-105 transition-transform duration-300"
+                              />
+                            ) : (
+                              <DishArtFallback name={item.name} />
                             )}
                           </div>
 
-                          <div className="flex items-center justify-between gap-2 pt-1">
-                            <div className="flex items-baseline gap-2">
-                              <span className="font-black text-base text-brand-orange">
-                                {formatPrice(item.price, tenant.currency)}
-                              </span>
-                              {item.original_price &&
-                                item.original_price > item.price && (
-                                  <span className="text-xs line-through text-slate-400">
-                                    {formatPrice(
-                                      item.original_price,
-                                      tenant.currency
-                                    )}
+                          <div className="flex-1 min-w-0 flex flex-col justify-between gap-2">
+                            <div
+                              onClick={() => openItemDetail(item)}
+                              className="cursor-pointer space-y-1"
+                            >
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {unavailable && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border bg-rose-500/15 text-rose-400 border-rose-500/30">
+                                    🚫 غير متوفر
                                   </span>
                                 )}
+                                {item.badges
+                                  .filter((b) => b !== "unavailable")
+                                  .map((b) => (
+                                    <span
+                                      key={b}
+                                      className={cn(
+                                        "px-2 py-0.5 rounded-full text-[10px] font-bold border",
+                                        BADGE_META[b]?.className
+                                      )}
+                                    >
+                                      {BADGE_META[b]?.label || b}
+                                    </span>
+                                  ))}
+                              </div>
+
+                              <h3 className="font-extrabold text-base leading-snug">
+                                {item.name}
+                              </h3>
+
+                              {(item.ingredients || item.description) && (
+                                <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">
+                                  {item.ingredients || item.description}
+                                </p>
+                              )}
                             </div>
 
+                            <div className="flex items-center justify-between gap-2 pt-1">
+                              <div className="flex items-baseline gap-2">
+                                <span className="font-black text-base text-brand-orange">
+                                  {formatPrice(item.price, tenant.currency)}
+                                </span>
+                                {item.original_price &&
+                                  item.original_price > item.price && (
+                                    <span className="text-xs line-through text-slate-400">
+                                      {formatPrice(
+                                        item.original_price,
+                                        tenant.currency
+                                      )}
+                                    </span>
+                                  )}
+                              </div>
+
+                              {!unavailable &&
+                                (qty === 0 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => addToCart(item)}
+                                    className="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold bg-orange-gradient text-white shadow-orange-glow hover:brightness-110 transition"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                    <span>أضف للسلة</span>
+                                  </button>
+                                ) : (
+                                  <div className="inline-flex items-center gap-2.5 rounded-xl px-2.5 py-1.5 bg-brand-orange/15 border border-brand-orange/35">
+                                    <button
+                                      type="button"
+                                      onClick={() => updateQty(item.id, -1)}
+                                      className="p-0.5 text-brand-orange hover:scale-110 transition"
+                                      aria-label="إنقاص الكمية"
+                                    >
+                                      <Minus className="w-4 h-4" />
+                                    </button>
+                                    <span className="text-sm font-black min-w-[18px] text-center">
+                                      {qty}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => updateQty(item.id, 1)}
+                                      className="p-0.5 text-brand-orange hover:scale-110 transition"
+                                      aria-label="زيادة الكمية"
+                                    >
+                                      <Plus className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* VIEW MODE: COMPACT LIST */}
+                {viewMode === "list" && (
+                  <div className="space-y-2.5">
+                    {catItems.map((item) => {
+                      const unavailable =
+                        !item.is_available ||
+                        item.badges.includes("unavailable");
+                      const qty = getQty(item.id);
+                      return (
+                        <div
+                          key={item.id}
+                          className={cn(
+                            "rounded-2xl p-3 glass-card flex items-center justify-between gap-3",
+                            unavailable && "opacity-60"
+                          )}
+                        >
+                          <div
+                            onClick={() => openItemDetail(item)}
+                            className="flex items-center gap-3 min-w-0 cursor-pointer flex-1"
+                          >
+                            <div className="w-14 h-14 rounded-xl overflow-hidden shrink-0 relative">
+                              {item.image_url ? (
+                                <Image
+                                  src={item.image_url}
+                                  alt={item.name}
+                                  fill
+                                  loading="lazy"
+                                  className="object-cover"
+                                />
+                              ) : (
+                                <DishArtFallback name={item.name} compact />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <h3 className="font-extrabold text-sm truncate">
+                                {item.name}
+                              </h3>
+                              {(item.ingredients || item.description) && (
+                                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                                  {item.ingredients || item.description}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className="font-black text-sm text-brand-orange">
+                              {formatPrice(item.price, tenant.currency)}
+                            </span>
                             {!unavailable &&
                               (qty === 0 ? (
                                 <button
                                   type="button"
                                   onClick={() => addToCart(item)}
-                                  className="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold bg-orange-gradient text-white shadow-orange-glow hover:brightness-110 transition"
+                                  className="w-9 h-9 rounded-xl bg-orange-gradient text-white flex items-center justify-center shadow-orange-glow hover:brightness-110 transition"
+                                  aria-label={`أضف ${item.name}`}
                                 >
-                                  <Plus className="w-3.5 h-3.5" />
-                                  <span>أضف للسلة</span>
+                                  <Plus className="w-4 h-4" />
                                 </button>
                               ) : (
-                                <div className="inline-flex items-center gap-2.5 rounded-xl px-2.5 py-1.5 bg-brand-orange/15 border border-brand-orange/35">
+                                <div className="inline-flex items-center gap-2 rounded-xl px-2 py-1 bg-brand-orange/15 border border-brand-orange/35">
                                   <button
                                     type="button"
                                     onClick={() => updateQty(item.id, -1)}
-                                    className="p-0.5 text-brand-orange hover:scale-110 transition"
-                                    aria-label="إنقاص الكمية"
+                                    className="p-0.5 text-brand-orange"
                                   >
-                                    <Minus className="w-4 h-4" />
+                                    <Minus className="w-3.5 h-3.5" />
                                   </button>
-                                  <span className="text-sm font-black min-w-[18px] text-center">
+                                  <span className="text-xs font-black">
                                     {qty}
                                   </span>
                                   <button
                                     type="button"
                                     onClick={() => updateQty(item.id, 1)}
-                                    className="p-0.5 text-brand-orange hover:scale-110 transition"
-                                    aria-label="زيادة الكمية"
+                                    className="p-0.5 text-brand-orange"
                                   >
-                                    <Plus className="w-4 h-4" />
+                                    <Plus className="w-3.5 h-3.5" />
                                   </button>
                                 </div>
                               ))}
                           </div>
                         </div>
-                      </motion.div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* VIEW MODE: CLASSIC PAPER-INSPIRED MENU */}
+                {viewMode === "classic" && (
+                  <div className="rounded-3xl p-4 sm:p-6 glass-panel divide-y divide-navy-700/10 dark:divide-white/10">
+                    {catItems.map((item) => {
+                      const unavailable =
+                        !item.is_available ||
+                        item.badges.includes("unavailable");
+                      const qty = getQty(item.id);
+                      return (
+                        <div
+                          key={item.id}
+                          className={cn(
+                            "py-3.5 first:pt-1 last:pb-1 flex items-center justify-between gap-4",
+                            unavailable && "opacity-60"
+                          )}
+                        >
+                          <div
+                            onClick={() => openItemDetail(item)}
+                            className="cursor-pointer min-w-0 flex-1 space-y-0.5"
+                          >
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h3 className="font-black text-base">
+                                {item.name}
+                              </h3>
+                              {unavailable && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 font-bold">
+                                  غير متوفر
+                                </span>
+                              )}
+                            </div>
+                            {(item.ingredients || item.description) && (
+                              <p className="text-xs text-slate-500 dark:text-slate-400">
+                                {item.ingredients || item.description}
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className="font-black text-sm sm:text-base text-brand-orange">
+                              {formatPrice(item.price, tenant.currency)}
+                            </span>
+                            {!unavailable &&
+                              (qty === 0 ? (
+                                <button
+                                  type="button"
+                                  onClick={() => addToCart(item)}
+                                  className="px-3 py-1.5 rounded-xl text-xs font-bold border border-brand-orange/40 text-brand-orange hover:bg-orange-gradient hover:text-white transition"
+                                >
+                                  + أضف
+                                </button>
+                              ) : (
+                                <div className="inline-flex items-center gap-2 rounded-xl px-2 py-1 bg-brand-orange/15 border border-brand-orange/35">
+                                  <button
+                                    type="button"
+                                    onClick={() => updateQty(item.id, -1)}
+                                    className="p-0.5 text-brand-orange"
+                                  >
+                                    <Minus className="w-3.5 h-3.5" />
+                                  </button>
+                                  <span className="text-xs font-black">
+                                    {qty}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateQty(item.id, 1)}
+                                    className="p-0.5 text-brand-orange"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </section>
             );
           })
         )}
 
         {filteredItems.length === 0 && items.length > 0 && (
-          <div className="rounded-3xl p-10 text-center glass-panel space-y-2">
-            <Search className="w-8 h-8 text-brand-orange mx-auto" />
-            <p className="font-bold">لا توجد نتائج مطابقة لبحثك</p>
-            <button
-              type="button"
-              onClick={() => {
-                setSearch("");
-                setBadgeFilter("all");
-              }}
-              className="text-xs font-bold text-brand-orange underline"
-            >
-              إعادة ضبط الفلترة
-            </button>
-          </div>
+          <EmptyStateCard
+            icon={Search}
+            title="لا توجد نتائج مطابقة لبحثك"
+            description="جرّب البحث بكلمة أخرى أو إعادة ضبط الفلتر لعرض كامل القائمة."
+            action={
+              <button
+                type="button"
+                onClick={() => {
+                  setSearch("");
+                  setBadgeFilter("all");
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-orange-gradient text-white"
+              >
+                إعادة ضبط الفلترة
+              </button>
+            }
+          />
         )}
       </main>
 
@@ -1065,23 +1522,33 @@ export function PublicMenuClient({
                   <span dir="ltr">@{tenant.instagram.replace("@", "")}</span>
                 </a>
               )}
-              <PwaInstallButton variant="outline" />
+              <PwaInstallButton
+                variant="outline"
+                appTitle={tenant.name_ar}
+                label="تثبيت التطبيق"
+              />
+              <Link
+                href="/"
+                className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold bg-navy-700 text-white hover:bg-navy-600 transition"
+              >
+                <Home className="w-3.5 h-3.5 text-brand-orange" />
+                <span>الصفحة الرئيسية العامة</span>
+              </Link>
             </div>
           </div>
 
-          <div className="pt-5 border-t border-navy-700/10 dark:border-white/10 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
-            <div className="flex items-center gap-2">
-              <span>مدعوم بواسطة</span>
-              <Link href="/" className="font-bold text-brand-orange hover:underline">
-                مينوز | MENUZ
-              </Link>
-              <span>• شركة سامرز للحلول الذكية</span>
+          <div className="pt-5 border-t border-navy-700/10 dark:border-white/10 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500 dark:text-slate-400">
+            <div className="flex items-center gap-3 text-center sm:text-right">
+              <SamerzLogo size={32} className="shrink-0" />
+              <p className="font-semibold">
+                فكرة وتصميم وبرمجة شركة سامرز للحلول الذكية 776951100 - جميع
+                الحقوق محفوظة © 2027
+              </p>
             </div>
 
-            {/* Discreet Admin Access Link */}
             <Link
               href="/login"
-              className="inline-flex items-center gap-1 opacity-60 hover:opacity-100 hover:text-brand-orange transition"
+              className="inline-flex items-center gap-1 opacity-65 hover:opacity-100 hover:text-brand-orange transition shrink-0"
               title="دخول لوحة الإدارة"
             >
               <Lock className="w-3 h-3" />
@@ -1226,7 +1693,6 @@ export function PublicMenuClient({
               onClick={(e) => e.stopPropagation()}
               className="w-full max-w-md h-full bg-white dark:bg-[#040E21] border-r border-navy-700/15 dark:border-white/10 flex flex-col shadow-2xl"
             >
-              {/* Drawer Header */}
               <div className="p-5 border-b border-navy-700/10 dark:border-white/10 flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
                   <ShoppingBag className="w-5 h-5 text-brand-orange" />
@@ -1243,7 +1709,6 @@ export function PublicMenuClient({
                 </button>
               </div>
 
-              {/* Drawer Body */}
               <div className="flex-1 overflow-y-auto p-5 space-y-5">
                 {cart.length === 0 ? (
                   <div className="py-16 text-center space-y-3">
@@ -1316,7 +1781,6 @@ export function PublicMenuClient({
                   </>
                 ) : (
                   <div className="space-y-4">
-                    {/* Editable Items Summary */}
                     <div className="rounded-2xl p-3.5 bg-slate-100/80 dark:bg-navy-800/60 space-y-2">
                       <div className="flex items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
                         <span>الأصناف المختارة ({cartCount})</span>
@@ -1352,7 +1816,6 @@ export function PublicMenuClient({
                       </div>
                     </div>
 
-                    {/* Customer Inputs */}
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
                         <label className="text-xs font-bold">الاسم *</label>
@@ -1375,7 +1838,6 @@ export function PublicMenuClient({
                       </div>
                     </div>
 
-                    {/* Order Type */}
                     <div className="grid grid-cols-2 gap-2.5">
                       {tenant.has_delivery && (
                         <button
@@ -1422,7 +1884,6 @@ export function PublicMenuClient({
                       </div>
                     )}
 
-                    {/* Payment Method */}
                     <div className="space-y-2.5">
                       <label className="text-xs font-bold block">
                         طريقة الدفع
@@ -1548,7 +2009,6 @@ export function PublicMenuClient({
                 )}
               </div>
 
-              {/* Drawer Footer */}
               {cart.length > 0 && (
                 <div className="p-5 border-t border-navy-700/10 dark:border-white/10 space-y-2.5">
                   {!invoiceStep ? (

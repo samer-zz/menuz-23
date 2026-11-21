@@ -1,9 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { MapPin, Phone, ArrowUpLeft } from "lucide-react";
+import { MapPin, Phone, ArrowUpLeft, Gift } from "lucide-react";
 import { MenuzLogo, SamerzLogo } from "@/components/ui/brand-logo";
-import { PwaInstallButton } from "@/components/pwa/install-button";
 
 export function Footer() {
   return (
@@ -23,7 +22,7 @@ export function Footer() {
               <SamerzLogo size={36} />
               <div>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  تطوير وتشغيل
+                  فكرة وتصميم وبرمجة
                 </p>
                 <p className="text-sm font-bold text-navy-700 dark:text-white">
                   شركة سامرز للحلول الذكية
@@ -40,6 +39,7 @@ export function Footer() {
             <ul className="space-y-2.5 text-sm text-navy-600 dark:text-slate-300">
               {[
                 { href: "/", label: "الرئيسية" },
+                { href: "/m/demo", label: "تجربة المنيو التجريبي" },
                 { href: "/about", label: "من نحن" },
                 { href: "/services", label: "الخدمات والمميزات" },
                 { href: "/faq", label: "الأسئلة الشائعة" },
@@ -79,19 +79,20 @@ export function Footer() {
                 </span>
               </a>
             </div>
-            <div className="pt-2">
-              <PwaInstallButton variant="outline" />
+            <div className="inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-bold bg-brand-orange/15 text-brand-orange border border-brand-orange/30">
+              <Gift className="w-4 h-4 shrink-0" />
+              <span>أول منيو مجاناً لمدة شهر</span>
             </div>
           </div>
         </div>
 
         <div className="mt-12 pt-6 border-t border-navy-700/10 dark:border-white/10 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500 dark:text-slate-400">
           <p>
-            © {new Date().getFullYear()} مينوز | MENUZ — جميع الحقوق محفوظة لشركة
-            سامرز للحلول الذكية
+            فكرة وتصميم وبرمجة شركة سامرز للحلول الذكية 776951100 - جميع الحقوق
+            محفوظة © 2027
           </p>
           <p className="tracking-widest font-semibold text-brand-orange">
-            MENUZ • SCAN • ORDER • ENJOY
+            MENUZ v3.0 • SCAN • ORDER • ENJOY
           </p>
         </div>
       </div>

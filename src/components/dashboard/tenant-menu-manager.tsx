@@ -14,21 +14,30 @@ import {
   Settings,
   Check,
   X,
+  Bell,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { compressImageFile } from "@/lib/image-compress";
 import { useApp } from "@/components/providers/theme-provider";
-import { cn, formatPrice } from "@/lib/utils";
+import { EmptyStateCard } from "@/components/ui/skeletons";
+import { cn, formatArabicDate, formatPrice } from "@/lib/utils";
 import type {
   Category,
   MenuBadge,
   MenuItem,
   Offer,
   Tenant,
+  TenantNotification,
   Wallet,
 } from "@/types/database";
 
-type SubTab = "items" | "categories" | "offers" | "wallets" | "settings";
+type SubTab =
+  | "items"
+  | "categories"
+  | "offers"
+  | "notifications"
+  | "wallets"
+  | "settings";
 
 const ALL_BADGES: Array<{ key: MenuBadge; label: string }> = [
   { key: "best_seller", label: "🔥 الأكثر طلباً" },
@@ -43,6 +52,7 @@ export function TenantMenuManager({
   items: initialItems,
   offers: initialOffers,
   wallets: initialWallets,
+  notifications: initialNotifications = [],
   isSuperAdmin = false,
   onTenantUpdated,
 }: {
@@ -51,6 +61,7 @@ export function TenantMenuManager({
   items: MenuItem[];
   offers: Offer[];
   wallets: Wallet[];
+  notifications?: TenantNotification[];
   isSuperAdmin?: boolean;
   onTenantUpdated?: (t: Tenant) => void;
 }) {
@@ -62,6 +73,8 @@ export function TenantMenuManager({
   const [items, setItems] = useState<MenuItem[]>(initialItems);
   const [offers, setOffers] = useState<Offer[]>(initialOffers);
   const [wallets, setWallets] = useState<Wallet[]>(initialWallets);
+  const [notifications, setNotifications] =
+    useState<TenantNotification[]>(initialNotifications);
 
   // Category Form
   const [catName, setCatName] = useState("");
@@ -96,6 +109,12 @@ export function TenantMenuManager({
   const [walletNumber, setWalletNumber] = useState("");
   const [walletAccountName, setWalletAccountName] = useState("");
   const [walletLogo, setWalletLogo] = useState("");
+
+  // Notification Form (7-day auto expiry by default)
+  const [notifTitle, setNotifTitle] = useState("");
+  const [notifBody, setNotifBody] = useState("");
+  const [notifDays, setNotifDays] = useState("7");
+  const [savingNotif, setSavingNotif] = useState(false);
 
   // Client Settings Form (Restricted to contact/social/delivery/story)
   const [story, setStory] = useState(tenant.story || "");
@@ -340,6 +359,49 @@ export function TenantMenuManager({
     toast("تم حذف المحفظة", "info");
   };
 
+  // --- IN-APP NOTIFICATIONS ---
+  const addNotification = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!notifTitle.trim() || !notifBody.trim()) return;
+    setSavingNotif(true);
+    try {
+      const days = Math.min(30, Math.max(1, Number(notifDays) || 7));
+      const expiresAt = new Date(
+        Date.now() + days * 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      const { data, error } = await supabase
+        .from("notifications")
+        .insert({
+          tenant_id: tenant.id,
+          title: notifTitle.trim(),
+          body: notifBody.trim(),
+          expires_at: expiresAt,
+        })
+        .select()
+        .single();
+
+      if (error) return toast(error.message, "error");
+      setNotifications((p) => [data, ...p]);
+      setNotifTitle("");
+      setNotifBody("");
+      setNotifDays("7");
+      toast("تم إرسال الإشعار وسيظهر فوراً في المنيو العام!", "success");
+    } finally {
+      setSavingNotif(false);
+    }
+  };
+
+  const deleteNotification = async (id: string) => {
+    const { error } = await supabase
+      .from("notifications")
+      .delete()
+      .eq("id", id);
+    if (error) return toast(error.message, "error");
+    setNotifications((p) => p.filter((n) => n.id !== id));
+    toast("تم حذف الإشعار", "info");
+  };
+
   // --- CONTACT & DELIVERY SETTINGS ---
   const saveClientSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -395,6 +457,7 @@ export function TenantMenuManager({
             { key: "items", label: `الأصناف (${items.length})`, icon: Utensils },
             { key: "categories", label: `الأقسام (${categories.length})`, icon: Layers },
             { key: "offers", label: `العروض (${offers.length})`, icon: Tag },
+            { key: "notifications", label: `الإشعارات (${notifications.length})`, icon: Bell },
             { key: "wallets", label: `المحافظ (${wallets.length})`, icon: WalletIcon },
             { key: "settings", label: "التواصل والتوصيل", icon: Settings },
           ] as const
@@ -849,6 +912,117 @@ export function TenantMenuManager({
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* NOTIFICATIONS TAB */}
+      {subTab === "notifications" && (
+        <div className="space-y-6">
+          <form
+            onSubmit={addNotification}
+            className="rounded-3xl p-6 glass-panel space-y-4"
+          >
+            <div className="space-y-1">
+              <h3 className="font-extrabold text-base flex items-center gap-2">
+                <Bell className="w-4 h-4 text-brand-orange" />
+                <span>إرسال إشعار فوري لزوار المنيو</span>
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                يظهر الإشعار لحظياً داخل أيقونة الجرس في المنيو العام ويُحذف
+                تلقائياً عند انتهاء صلاحيته (افتراضياً بعد 7 أيام).
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <input
+                required
+                value={notifTitle}
+                onChange={(e) => setNotifTitle(e.target.value)}
+                placeholder="عنوان الإشعار *"
+                className="sm:col-span-3 rounded-xl px-3 py-2.5 text-sm bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+              />
+              <div className="space-y-1">
+                <select
+                  value={notifDays}
+                  onChange={(e) => setNotifDays(e.target.value)}
+                  className="w-full rounded-xl px-3 py-2.5 text-sm bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+                >
+                  <option value="1">ينتهي خلال يوم واحد</option>
+                  <option value="3">ينتهي خلال 3 أيام</option>
+                  <option value="7">ينتهي خلال 7 أيام (افتراضي)</option>
+                  <option value="14">ينتهي خلال 14 يوماً</option>
+                  <option value="30">ينتهي خلال 30 يوماً</option>
+                </select>
+              </div>
+            </div>
+
+            <textarea
+              required
+              rows={2}
+              value={notifBody}
+              onChange={(e) => setNotifBody(e.target.value)}
+              placeholder="نص الإشعار أو التنبيه للعملاء *"
+              className="w-full rounded-xl px-3 py-2.5 text-sm bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+            />
+
+            <button
+              type="submit"
+              disabled={savingNotif}
+              className="rounded-xl px-5 py-2.5 text-sm font-bold bg-orange-gradient text-white shadow-orange-glow disabled:opacity-60"
+            >
+              {savingNotif ? "جاري الإرسال..." : "نشر الإشعار الآن"}
+            </button>
+          </form>
+
+          {notifications.length === 0 ? (
+            <EmptyStateCard
+              icon={Bell}
+              title="لا توجد إشعارات منشورة"
+              description="أرسل أول إشعار ترحيبي أو تنبيه بعرض خاص ليصل فوراً لزوار المنيو."
+            />
+          ) : (
+            <div className="space-y-3">
+              {notifications.map((n) => {
+                const expired = new Date(n.expires_at).getTime() <= Date.now();
+                return (
+                  <div
+                    key={n.id}
+                    className="rounded-2xl p-4 glass-panel flex items-start justify-between gap-3"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <p className="font-bold text-sm">{n.title}</p>
+                        <span
+                          className={cn(
+                            "text-[10px] px-2 py-0.5 rounded-full font-bold",
+                            expired
+                              ? "bg-rose-500/15 text-rose-400"
+                              : "bg-emerald-500/15 text-emerald-500"
+                          )}
+                        >
+                          {expired ? "منتهي" : "نشط"}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-300">
+                        {n.body}
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        ينتهي في: {formatArabicDate(n.expires_at)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => deleteNotification(n.id)}
+                      className="p-2 rounded-lg hover:bg-rose-500/15 text-rose-500 shrink-0"
+                      title="حذف الإشعار"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

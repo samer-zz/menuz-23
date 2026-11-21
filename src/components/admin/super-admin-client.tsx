@@ -25,6 +25,8 @@ import {
   Sun,
   Moon,
   FileText,
+  FlaskConical,
+  Search,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { compressImageFile } from "@/lib/image-compress";
@@ -44,6 +46,7 @@ import type {
   Offer,
   Profile,
   Tenant,
+  TenantNotification,
   Wallet,
 } from "@/types/database";
 
@@ -63,6 +66,7 @@ export function SuperAdminClient({
   items: initialItems,
   offers: initialOffers,
   wallets: initialWallets,
+  notifications: initialNotifications = [],
   events,
   auditLogs,
   messages: initialMessages,
@@ -74,6 +78,7 @@ export function SuperAdminClient({
   items: MenuItem[];
   offers: Offer[];
   wallets: Wallet[];
+  notifications?: TenantNotification[];
   events: AnalyticsEvent[];
   auditLogs: AuditLog[];
   messages: ContactMessage[];
@@ -89,6 +94,9 @@ export function SuperAdminClient({
   const [mustChange, setMustChange] = useState(profile.must_change_password);
   const [qrTenant, setQrTenant] = useState<Tenant | null>(null);
   const [managingTenant, setManagingTenant] = useState<Tenant | null>(null);
+  const [tenantSearch, setTenantSearch] = useState("");
+  const [tenantPage, setTenantPage] = useState(1);
+  const TENANTS_PER_PAGE = 12;
 
   // Tenant Create / Edit modal state
   const [tenantModalOpen, setTenantModalOpen] = useState(false);
@@ -109,6 +117,7 @@ export function SuperAdminClient({
   const [tSuspendedMsg, setTSuspendedMsg] = useState(
     "نعتذر، هذا المنيو متوقف مؤقتاً للصيانة والتحديث."
   );
+  const [tSeedDemo, setTSeedDemo] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [savingTenant, setSavingTenant] = useState(false);
 
@@ -164,6 +173,7 @@ export function SuperAdminClient({
     setTAccentColor("#FF7A00");
     setTCurrency("ر.ي");
     setTSuspendedMsg("نعتذر، هذا المنيو متوقف مؤقتاً للصيانة والتحديث.");
+    setTSeedDemo(false);
     setTenantModalOpen(true);
   };
 
@@ -206,6 +216,7 @@ export function SuperAdminClient({
         accent_color: tAccentColor,
         currency: tCurrency,
         suspended_message: tSuspendedMsg,
+        ...(!editingTenant ? { seedDemoTemplate: tSeedDemo } : {}),
       };
 
       const res = await fetch("/api/admin/tenants", {
@@ -361,7 +372,8 @@ export function SuperAdminClient({
             <div className="flex items-center gap-2.5 text-sm font-bold text-amber-300">
               <AlertTriangle className="w-5 h-5 shrink-0" />
               <span>
-                يرجى تغيير كلمة المرور الأولية لحساب Super Admin فوراً.
+                سياسة الأمان: يرجى تغيير كلمة المرور الأولية لحساب Super Admin
+                خلال 72 ساعة.
               </span>
             </div>
             <button
@@ -455,6 +467,9 @@ export function SuperAdminClient({
                 wallets={initialWallets.filter(
                   (w) => w.tenant_id === managingTenant.id
                 )}
+                notifications={initialNotifications.filter(
+                  (n) => n.tenant_id === managingTenant.id
+                )}
                 onTenantUpdated={(updated) => {
                   setTenants((p) =>
                     p.map((x) => (x.id === updated.id ? updated : x))
@@ -464,122 +479,221 @@ export function SuperAdminClient({
               />
             </div>
           ) : (
-            <div className="space-y-5">
-              <div className="flex items-center justify-between">
-                <h2 className="text-xl font-black">إدارة الجهات والمطاعم</h2>
-                <button
-                  type="button"
-                  onClick={openNewTenant}
-                  className="inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold bg-orange-gradient text-white shadow-orange-glow"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>إضافة جهة جديدة</span>
-                </button>
-              </div>
+            (() => {
+              const filteredTenants = tenants.filter((t) => {
+                const q = tenantSearch.trim().toLowerCase();
+                if (!q) return true;
+                return (
+                  t.name_ar.toLowerCase().includes(q) ||
+                  t.slug.toLowerCase().includes(q) ||
+                  (t.name_en || "").toLowerCase().includes(q)
+                );
+              });
+              const totalPages = Math.max(
+                1,
+                Math.ceil(filteredTenants.length / TENANTS_PER_PAGE)
+              );
+              const safePage = Math.min(tenantPage, totalPages);
+              const pagedTenants = filteredTenants.slice(
+                (safePage - 1) * TENANTS_PER_PAGE,
+                safePage * TENANTS_PER_PAGE
+              );
+              const demoTenant = tenants.find((t) => t.is_demo);
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {tenants.map((t) => (
-                  <div
-                    key={t.id}
-                    className="rounded-3xl p-5 glass-panel space-y-4"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        {t.logo_url ? (
-                          <Image
-                            src={t.logo_url}
-                            alt={t.name_ar}
-                            width={54}
-                            height={54}
-                            className="w-14 h-14 rounded-2xl object-cover border border-brand-orange/30 shrink-0"
-                          />
-                        ) : (
-                          <div className="w-14 h-14 rounded-2xl bg-navy-700 flex items-center justify-center font-black text-brand-orange text-xl shrink-0">
-                            {t.name_ar.slice(0, 1)}
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <h3 className="font-black text-lg truncate">
-                            {t.name_ar}
-                          </h3>
-                          <p dir="ltr" className="text-xs font-mono text-brand-orange">
-                            /m/{t.slug}
-                          </p>
-                        </div>
-                      </div>
-
-                      <span
-                        className={cn(
-                          "px-3 py-1 rounded-full text-xs font-bold shrink-0",
-                          t.is_active
-                            ? "bg-emerald-500/15 text-emerald-400"
-                            : "bg-rose-500/15 text-rose-400"
-                        )}
-                      >
-                        {t.is_active ? "نشط" : "متوقف"}
-                      </span>
+              return (
+                <div className="space-y-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-xl font-black">
+                        إدارة الجهات والمطاعم ({filteredTenants.length})
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        تحميل مجزّأ جاهز لاستيعاب 150+ جهة بسلاسة
+                      </p>
                     </div>
-
-                    <div className="flex flex-wrap gap-2 pt-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {demoTenant && (
+                        <button
+                          type="button"
+                          onClick={() => setManagingTenant(demoTenant)}
+                          className="inline-flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-bold border border-brand-orange/40 bg-brand-orange/15 text-brand-orange hover:bg-brand-orange/25 transition"
+                        >
+                          <FlaskConical className="w-4 h-4" />
+                          <span>إدارة المنيو التجريبي</span>
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => setManagingTenant(t)}
-                        className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold bg-brand-orange/15 text-brand-orange border border-brand-orange/30"
+                        onClick={openNewTenant}
+                        className="inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold bg-orange-gradient text-white shadow-orange-glow"
                       >
-                        <Utensils className="w-3.5 h-3.5" />
-                        <span>المنيو</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openEditTenant(t)}
-                        className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold glass-card"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        <span>الهوية</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setQrTenant(t)}
-                        className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold glass-card"
-                      >
-                        <QrCode className="w-3.5 h-3.5 text-brand-orange" />
-                        <span>QR</span>
-                      </button>
-                      <a
-                        href={`/m/${t.slug}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold glass-card"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        <span>فتح</span>
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => toggleTenantActive(t)}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold border",
-                          t.is_active
-                            ? "border-amber-500/30 text-amber-400"
-                            : "border-emerald-500/30 text-emerald-400"
-                        )}
-                      >
-                        <Power className="w-3.5 h-3.5" />
-                        <span>{t.is_active ? "إيقاف" : "تشغيل"}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteTenant(t.id)}
-                        className="p-2 rounded-xl text-rose-500 hover:bg-rose-500/10"
-                        title="حذف الجهة"
-                      >
-                        <Trash2 className="w-4 h-4" />
+                        <Plus className="w-4 h-4" />
+                        <span>إضافة جهة جديدة</span>
                       </button>
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
+
+                  {/* Search Filter */}
+                  <div className="relative max-w-md">
+                    <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      value={tenantSearch}
+                      onChange={(e) => {
+                        setTenantSearch(e.target.value);
+                        setTenantPage(1);
+                      }}
+                      placeholder="ابحث باسم الجهة أو الـ slug..."
+                      className="w-full rounded-xl pr-10 pl-4 py-2.5 text-sm bg-slate-100/90 dark:bg-navy-900/70 border border-navy-700/10 dark:border-white/15 focus:outline-none focus:border-brand-orange"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {pagedTenants.map((t) => (
+                      <div
+                        key={t.id}
+                        className={cn(
+                          "rounded-3xl p-5 glass-panel space-y-4",
+                          t.is_demo && "border-brand-orange/45"
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            {t.logo_url ? (
+                              <Image
+                                src={t.logo_url}
+                                alt={t.name_ar}
+                                width={54}
+                                height={54}
+                                className="w-14 h-14 rounded-2xl object-cover border border-brand-orange/30 shrink-0"
+                              />
+                            ) : (
+                              <div className="w-14 h-14 rounded-2xl bg-navy-700 flex items-center justify-center font-black text-brand-orange text-xl shrink-0">
+                                {t.name_ar.slice(0, 1)}
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className="font-black text-lg truncate">
+                                  {t.name_ar}
+                                </h3>
+                                {t.is_demo && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-brand-orange/20 text-brand-orange border border-brand-orange/35">
+                                    <FlaskConical className="w-3 h-3" />
+                                    <span>تجريبي</span>
+                                  </span>
+                                )}
+                              </div>
+                              <p
+                                dir="ltr"
+                                className="text-xs font-mono text-brand-orange"
+                              >
+                                /m/{t.slug}
+                              </p>
+                            </div>
+                          </div>
+
+                          <span
+                            className={cn(
+                              "px-3 py-1 rounded-full text-xs font-bold shrink-0",
+                              t.is_active
+                                ? "bg-emerald-500/15 text-emerald-400"
+                                : "bg-rose-500/15 text-rose-400"
+                            )}
+                          >
+                            {t.is_active ? "نشط" : "متوقف"}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setManagingTenant(t)}
+                            className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold bg-brand-orange/15 text-brand-orange border border-brand-orange/30"
+                          >
+                            <Utensils className="w-3.5 h-3.5" />
+                            <span>المنيو</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openEditTenant(t)}
+                            className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold glass-card"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>الهوية</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setQrTenant(t)}
+                            className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold glass-card"
+                          >
+                            <QrCode className="w-3.5 h-3.5 text-brand-orange" />
+                            <span>QR</span>
+                          </button>
+                          <a
+                            href={`/m/${t.slug}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold glass-card"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            <span>فتح</span>
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => toggleTenantActive(t)}
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold border",
+                              t.is_active
+                                ? "border-amber-500/30 text-amber-400"
+                                : "border-emerald-500/30 text-emerald-400"
+                            )}
+                          >
+                            <Power className="w-3.5 h-3.5" />
+                            <span>{t.is_active ? "إيقاف" : "تشغيل"}</span>
+                          </button>
+                          {!t.is_demo && (
+                            <button
+                              type="button"
+                              onClick={() => deleteTenant(t.id)}
+                              className="p-2 rounded-xl text-rose-500 hover:bg-rose-500/10"
+                              title="حذف الجهة"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-center gap-2 pt-2">
+                      <button
+                        type="button"
+                        disabled={safePage <= 1}
+                        onClick={() => setTenantPage((p) => Math.max(1, p - 1))}
+                        className="px-3.5 py-1.5 rounded-xl text-xs font-bold glass-panel disabled:opacity-40"
+                      >
+                        السابق
+                      </button>
+                      <span className="text-xs font-bold px-3">
+                        صفحة {safePage} من {totalPages}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={safePage >= totalPages}
+                        onClick={() =>
+                          setTenantPage((p) => Math.min(totalPages, p + 1))
+                        }
+                        className="px-3.5 py-1.5 rounded-xl text-xs font-bold glass-panel disabled:opacity-40"
+                      >
+                        التالي
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()
           ))}
 
         {/* ACCOUNTS */}
@@ -945,6 +1059,20 @@ export function SuperAdminClient({
                 className="w-full rounded-xl px-3 py-2.5 text-sm bg-slate-100 dark:bg-navy-900 border border-white/15"
               />
             </div>
+
+            {!editingTenant && (
+              <label className="flex items-center gap-2.5 rounded-xl p-3 bg-brand-orange/10 border border-brand-orange/30 text-xs font-bold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tSeedDemo}
+                  onChange={(e) => setTSeedDemo(e.target.checked)}
+                />
+                <span>
+                  إنشاء منيو تجريبي مبدئي (أقسام وأصناف نموذجية لمعاينة القالب
+                  فوراً)
+                </span>
+              </label>
+            )}
 
             <button
               type="submit"

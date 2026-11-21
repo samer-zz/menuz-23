@@ -7,6 +7,7 @@ import type {
   MenuItem,
   Offer,
   Tenant,
+  TenantNotification,
   Wallet,
 } from "@/types/database";
 
@@ -21,12 +22,15 @@ export async function generateMetadata({
   const supabase = await createServerSupabase();
   const { data: tenant } = await supabase
     .from("tenants")
-    .select("name_ar, name_en, description, logo_url, cover_url")
+    .select("slug, name_ar, name_en, description, logo_url, cover_url")
     .eq("slug", slug)
     .maybeSingle();
 
   if (!tenant) {
-    return { title: "منيو غير موجود" };
+    return {
+      title: "منيو غير موجود",
+      manifest: "/api/manifest/default",
+    };
   }
 
   const title = tenant.name_en
@@ -40,6 +44,7 @@ export async function generateMetadata({
   return {
     title,
     description,
+    manifest: `/api/manifest/${tenant.slug}`,
     openGraph: {
       title,
       description,
@@ -80,35 +85,46 @@ export default async function PublicMenuPage({
         items={[]}
         offers={[]}
         wallets={[]}
+        initialNotifications={[]}
       />
     );
   }
 
-  const [catsRes, itemsRes, offersRes, walletsRes] = await Promise.all([
-    supabase
-      .from("categories")
-      .select("*")
-      .eq("tenant_id", tenant.id)
-      .eq("is_active", true)
-      .order("sort_order", { ascending: true }),
-    supabase
-      .from("menu_items")
-      .select("*")
-      .eq("tenant_id", tenant.id)
-      .order("sort_order", { ascending: true }),
-    supabase
-      .from("offers")
-      .select("*")
-      .eq("tenant_id", tenant.id)
-      .eq("is_active", true)
-      .order("created_at", { ascending: false }),
-    supabase
-      .from("wallets")
-      .select("*")
-      .eq("tenant_id", tenant.id)
-      .eq("is_active", true)
-      .order("sort_order", { ascending: true }),
-  ]);
+  const nowIso = new Date().toISOString();
+
+  const [catsRes, itemsRes, offersRes, walletsRes, notifRes] =
+    await Promise.all([
+      supabase
+        .from("categories")
+        .select("*")
+        .eq("tenant_id", tenant.id)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true }),
+      supabase
+        .from("menu_items")
+        .select("*")
+        .eq("tenant_id", tenant.id)
+        .order("sort_order", { ascending: true }),
+      supabase
+        .from("offers")
+        .select("*")
+        .eq("tenant_id", tenant.id)
+        .eq("is_active", true)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("wallets")
+        .select("*")
+        .eq("tenant_id", tenant.id)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true }),
+      supabase
+        .from("notifications")
+        .select("*")
+        .eq("tenant_id", tenant.id)
+        .gt("expires_at", nowIso)
+        .order("created_at", { ascending: false })
+        .limit(20),
+    ]);
 
   return (
     <PublicMenuClient
@@ -117,6 +133,7 @@ export default async function PublicMenuPage({
       items={(itemsRes.data as MenuItem[]) ?? []}
       offers={(offersRes.data as Offer[]) ?? []}
       wallets={(walletsRes.data as Wallet[]) ?? []}
+      initialNotifications={(notifRes.data as TenantNotification[]) ?? []}
     />
   );
 }
