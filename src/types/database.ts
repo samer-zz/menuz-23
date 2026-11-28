@@ -25,6 +25,10 @@ export interface Tenant {
   cover_url: string | null;
   primary_color: string;
   accent_color: string;
+  background_color?: string | null;
+  card_color?: string | null;
+  text_color?: string | null;
+  button_text_color?: string | null;
   currency: string;
   is_active: boolean;
   is_demo: boolean;
@@ -104,6 +108,46 @@ export interface TenantNotification {
   title: string;
   body: string;
   expires_at: string;
+  scheduled_for?: string | null;
+  push_sent?: boolean;
+  created_at: string;
+}
+
+export interface OrderItemSnapshot {
+  item_id: string;
+  name: string;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+}
+
+export interface OrderRecord {
+  id: string;
+  tenant_id: string;
+  order_number: string;
+  idempotency_key: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  order_type: "delivery" | "pickup";
+  delivery_address: string | null;
+  payment_method: "cash" | "wallet";
+  wallet_name: string | null;
+  transaction_ref: string | null;
+  notes: string | null;
+  items_snapshot: OrderItemSnapshot[];
+  computed_total: number;
+  currency: string;
+  channel: "whatsapp" | "sms" | "direct";
+  status: "sent" | "confirmed" | "completed" | "cancelled";
+  created_at: string;
+}
+
+export interface OrderFeedback {
+  id: string;
+  tenant_id: string;
+  order_id: string | null;
+  rating: number;
+  comment: string | null;
   created_at: string;
 }
 
