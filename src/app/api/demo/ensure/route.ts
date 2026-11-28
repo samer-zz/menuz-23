@@ -1,13 +1,74 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createServerSupabase } from "@/lib/supabase/server";
 import { createAdminSupabase } from "@/lib/supabase/admin";
-import { verifySameOrigin } from "@/lib/security";
+import {
+  buildRateLimitKey,
+  enforceRateLimit,
+  getRateLimitIdentifier,
+  verifySameOrigin,
+  writeAuditLog,
+} from "@/lib/security";
 
 export async function POST(request: NextRequest) {
   if (!verifySameOrigin(request)) {
     return NextResponse.json({ error: "طلب غير مصرح به" }, { status: 403 });
   }
 
+  const ident = getRateLimitIdentifier(request);
+  const rl = await enforceRateLimit(buildRateLimitKey("demo", ident), 20, 60);
+  if (rl.status === "rate_limited") {
+    return NextResponse.json(
+      { error: "يرجى الانتظار قليلاً قبل إعادة المحاولة" },
+      { status: 429 }
+    );
+  }
+  if (rl.status === "unavailable") {
+    return NextResponse.json(
+      { error: "خدمة التحقق الأمني غير متاحة مؤقتاً، يمكنك فتح المنيو التجريبي مباشرة" },
+      { status: 503 }
+    );
+  }
+
   try {
+    const supabase = await createServerSupabase();
+
+    // 1. Check via anon/session RLS first (only active demo tenant is visible publicly)
+    const { data: activeDemo } = await supabase
+      .from("tenants")
+      .select("id, slug, is_active, is_demo")
+      .eq("slug", "demo")
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (activeDemo) {
+      return NextResponse.json({ ok: true, slug: "demo", url: "/m/demo" });
+    }
+
+    // 2. If demo is missing or suspended, ONLY an authenticated super_admin may provision/reactivate it
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json(
+        { error: "المنيو التجريبي غير متاح حالياً" },
+        { status: 403 }
+      );
+    }
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .single();
+
+    if (profile?.role !== "super_admin") {
+      return NextResponse.json(
+        { error: "المنيو التجريبي متوقف حالياً من الإدارة" },
+        { status: 403 }
+      );
+    }
+
     const admin = createAdminSupabase();
     const { data: existing } = await admin
       .from("tenants")
@@ -16,12 +77,19 @@ export async function POST(request: NextRequest) {
       .maybeSingle();
 
     if (existing) {
-      if (!existing.is_active) {
-        await admin
-          .from("tenants")
-          .update({ is_active: true, is_demo: true })
-          .eq("id", existing.id);
-      }
+      await admin
+        .from("tenants")
+        .update({ is_active: true, is_demo: true })
+        .eq("id", existing.id);
+
+      await writeAuditLog({
+        actorId: user.id,
+        actorEmail: user.email ?? null,
+        action: "reactivate_demo_tenant",
+        targetType: "tenant",
+        targetId: existing.id,
+      });
+
       return NextResponse.json({ ok: true, slug: "demo", url: "/m/demo" });
     }
 
@@ -55,7 +123,7 @@ export async function POST(request: NextRequest) {
 
     if (createErr || !created) {
       return NextResponse.json(
-        { error: createErr?.message || "تعذر إنشاء المنيو التجريبي" },
+        { error: "تعذر إنشاء المنيو التجريبي" },
         { status: 500 }
       );
     }
@@ -124,10 +192,18 @@ export async function POST(request: NextRequest) {
       sort_order: 1,
     });
 
+    await writeAuditLog({
+      actorId: user.id,
+      actorEmail: user.email ?? null,
+      action: "provision_demo_tenant",
+      targetType: "tenant",
+      targetId: created.id,
+    });
+
     return NextResponse.json({ ok: true, slug: "demo", url: "/m/demo" });
-  } catch (err) {
+  } catch {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "خطأ في الخادم" },
+      { error: "تعذر الوصول إلى المنيو التجريبي" },
       { status: 500 }
     );
   }

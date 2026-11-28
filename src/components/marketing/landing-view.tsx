@@ -196,7 +196,7 @@ export function LandingView() {
                     ) : (
                       <Play className="w-5 h-5 fill-current" />
                     )}
-                    <span>إنشاء منيو تجريبي</span>
+                    <span>عرض المنيو التجريبي</span>
                   </button>
 
                   <Link

@@ -6,6 +6,7 @@ import type {
   Category,
   MenuItem,
   Offer,
+  OrderRecord,
   Profile,
   Tenant,
   TenantNotification,
@@ -42,6 +43,7 @@ export default async function DashboardPage() {
   let wallets: Wallet[] = [];
   let notifications: TenantNotification[] = [];
   let events: AnalyticsEvent[] = [];
+  let orders: OrderRecord[] = [];
 
   if (profile.tenant_id) {
     const [tRes, cRes, iRes, oRes, wRes, nRes, eRes] = await Promise.all([
@@ -54,22 +56,26 @@ export default async function DashboardPage() {
         .from("categories")
         .select("*")
         .eq("tenant_id", profile.tenant_id)
-        .order("sort_order", { ascending: true }),
+        .order("sort_order", { ascending: true })
+        .limit(300),
       supabase
         .from("menu_items")
         .select("*")
         .eq("tenant_id", profile.tenant_id)
-        .order("sort_order", { ascending: true }),
+        .order("sort_order", { ascending: true })
+        .limit(1000),
       supabase
         .from("offers")
         .select("*")
         .eq("tenant_id", profile.tenant_id)
-        .order("created_at", { ascending: false }),
+        .order("created_at", { ascending: false })
+        .limit(100),
       supabase
         .from("wallets")
         .select("*")
         .eq("tenant_id", profile.tenant_id)
-        .order("sort_order", { ascending: true }),
+        .order("sort_order", { ascending: true })
+        .limit(50),
       supabase
         .from("notifications")
         .select("*")
@@ -91,6 +97,18 @@ export default async function DashboardPage() {
     wallets = (wRes.data as Wallet[]) ?? [];
     notifications = (nRes.data as TenantNotification[]) ?? [];
     events = (eRes.data as AnalyticsEvent[]) ?? [];
+
+    try {
+      const { data: ordersData } = await supabase
+        .from("orders")
+        .select("*")
+        .eq("tenant_id", profile.tenant_id)
+        .order("created_at", { ascending: false })
+        .limit(150);
+      if (ordersData) orders = ordersData as OrderRecord[];
+    } catch {
+      orders = [];
+    }
   }
 
   return (
@@ -103,6 +121,7 @@ export default async function DashboardPage() {
       wallets={wallets}
       notifications={notifications}
       events={events}
+      orders={orders}
     />
   );
 }

@@ -27,16 +27,22 @@ import {
   FileText,
   FlaskConical,
   Search,
+  ShoppingBag,
+  Sparkles,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { compressImageFile } from "@/lib/image-compress";
+import {
+  compressImageFile,
+  MAX_CLIENT_IMAGE_BYTES,
+  validateImageFile,
+} from "@/lib/image-compress";
 import { useApp } from "@/components/providers/theme-provider";
 import { MenuzLogo } from "@/components/ui/brand-logo";
 import { AnalyticsCharts } from "@/components/dashboard/analytics-charts";
 import { PasswordChangeCard } from "@/components/dashboard/password-change-card";
 import { QrGeneratorModal } from "@/components/dashboard/qr-generator-modal";
 import { TenantMenuManager } from "@/components/dashboard/tenant-menu-manager";
-import { cn, formatArabicDate } from "@/lib/utils";
+import { cn, formatArabicDate, formatPrice } from "@/lib/utils";
 import type {
   AnalyticsEvent,
   AuditLog,
@@ -44,6 +50,8 @@ import type {
   ContactMessage,
   MenuItem,
   Offer,
+  OrderFeedback,
+  OrderRecord,
   Profile,
   Tenant,
   TenantNotification,
@@ -53,6 +61,8 @@ import type {
 type AdminTab =
   | "overview"
   | "tenants"
+  | "orders"
+  | "feedbacks"
   | "accounts"
   | "messages"
   | "audit"
@@ -62,26 +72,30 @@ export function SuperAdminClient({
   profile,
   tenants: initialTenants,
   profiles: initialProfiles,
-  categories: initialCategories,
-  items: initialItems,
-  offers: initialOffers,
-  wallets: initialWallets,
+  categories: initialCategories = [],
+  items: initialItems = [],
+  offers: initialOffers = [],
+  wallets: initialWallets = [],
   notifications: initialNotifications = [],
   events,
   auditLogs,
   messages: initialMessages,
+  orders = [],
+  feedbacks = [],
 }: {
   profile: Profile;
   tenants: Tenant[];
   profiles: Profile[];
-  categories: Category[];
-  items: MenuItem[];
-  offers: Offer[];
-  wallets: Wallet[];
+  categories?: Category[];
+  items?: MenuItem[];
+  offers?: Offer[];
+  wallets?: Wallet[];
   notifications?: TenantNotification[];
   events: AnalyticsEvent[];
   auditLogs: AuditLog[];
   messages: ContactMessage[];
+  orders?: OrderRecord[];
+  feedbacks?: OrderFeedback[];
 }) {
   const router = useRouter();
   const { theme, toggleTheme, toast } = useApp();
@@ -94,9 +108,42 @@ export function SuperAdminClient({
   const [mustChange, setMustChange] = useState(profile.must_change_password);
   const [qrTenant, setQrTenant] = useState<Tenant | null>(null);
   const [managingTenant, setManagingTenant] = useState<Tenant | null>(null);
+  const [loadingTenantMenu, setLoadingTenantMenu] = useState(false);
+  const [managedMenu, setManagedMenu] = useState<{
+    tenantId: string;
+    categories: Category[];
+    items: MenuItem[];
+    offers: Offer[];
+    wallets: Wallet[];
+    notifications: TenantNotification[];
+  } | null>(null);
   const [tenantSearch, setTenantSearch] = useState("");
   const [tenantPage, setTenantPage] = useState(1);
   const TENANTS_PER_PAGE = 12;
+
+  const openManageTenant = async (t: Tenant) => {
+    setManagingTenant(t);
+    setLoadingTenantMenu(true);
+    setManagedMenu(null);
+    try {
+      const res = await fetch(
+        `/api/admin/tenant-menu?tenantId=${encodeURIComponent(t.id)}`
+      );
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
+        setManagedMenu({
+          tenantId: t.id,
+          categories: data.categories ?? [],
+          items: data.items ?? [],
+          offers: data.offers ?? [],
+          wallets: data.wallets ?? [],
+          notifications: data.notifications ?? [],
+        });
+      }
+    } finally {
+      setLoadingTenantMenu(false);
+    }
+  };
 
   // Tenant Create / Edit modal state
   const [tenantModalOpen, setTenantModalOpen] = useState(false);
@@ -113,6 +160,9 @@ export function SuperAdminClient({
   const [tCoverUrl, setTCoverUrl] = useState("");
   const [tPrimaryColor, setTPrimaryColor] = useState("#0B2D5B");
   const [tAccentColor, setTAccentColor] = useState("#FF7A00");
+  const [tBgColor, setTBgColor] = useState("");
+  const [tTextColor, setTTextColor] = useState("");
+  const [tCardColor, setTCardColor] = useState("");
   const [tCurrency, setTCurrency] = useState("ر.ي");
   const [tSuspendedMsg, setTSuspendedMsg] = useState(
     "نعتذر، هذا المنيو متوقف مؤقتاً للصيانة والتحديث."
@@ -137,21 +187,40 @@ export function SuperAdminClient({
   };
 
   const uploadAdminMedia = async (file: File, folder: string) => {
+    const check = await validateImageFile(file);
+    if (!check.valid) {
+      toast(check.error, "error");
+      return null;
+    }
+
     setUploadingMedia(true);
     try {
       const compressed = await compressImageFile(file);
-      const ext = compressed.name.split(".").pop() || "webp";
-      const filePath = `super-admin/${folder}-${Date.now()}.${ext}`;
-      const { error } = await supabase.storage
-        .from("menus-media")
-        .upload(filePath, compressed, { upsert: true });
-      if (error) {
-        toast(error.message, "error");
+      if (compressed.size > MAX_CLIENT_IMAGE_BYTES) {
+        toast("حجم الصورة يتجاوز الحد الأقصى المسموح (4 ميجابايت)", "error");
         return null;
       }
-      const { data } = supabase.storage.from("menus-media").getPublicUrl(filePath);
-      toast("تم رفع الصورة بنجاح", "success");
-      return data.publicUrl;
+      const formData = new FormData();
+      formData.append("file", compressed);
+      formData.append("folder", folder);
+      if (editingTenant?.id) {
+        formData.append("tenantId", editingTenant.id);
+      }
+
+      const res = await fetch("/api/media/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.url) {
+        toast(data?.error || "فشل رفع الصورة", "error");
+        return null;
+      }
+      toast("تم التحقق من الصورة ورفعها بنجاح", "success");
+      return data.url as string;
+    } catch {
+      toast("تعذر الاتصال بخدمة رفع الصور", "error");
+      return null;
     } finally {
       setUploadingMedia(false);
     }
@@ -171,6 +240,9 @@ export function SuperAdminClient({
     setTCoverUrl("");
     setTPrimaryColor("#0B2D5B");
     setTAccentColor("#FF7A00");
+    setTBgColor("");
+    setTTextColor("");
+    setTCardColor("");
     setTCurrency("ر.ي");
     setTSuspendedMsg("نعتذر، هذا المنيو متوقف مؤقتاً للصيانة والتحديث.");
     setTSeedDemo(false);
@@ -191,6 +263,9 @@ export function SuperAdminClient({
     setTCoverUrl(t.cover_url || "");
     setTPrimaryColor(t.primary_color || "#0B2D5B");
     setTAccentColor(t.accent_color || "#FF7A00");
+    setTBgColor(t.background_color || "");
+    setTTextColor(t.text_color || "");
+    setTCardColor(t.card_color || "");
     setTCurrency(t.currency || "ر.ي");
     setTSuspendedMsg(t.suspended_message || "");
     setTenantModalOpen(true);
@@ -214,6 +289,15 @@ export function SuperAdminClient({
         cover_url: tCoverUrl.trim() || null,
         primary_color: tPrimaryColor,
         accent_color: tAccentColor,
+        background_color: /^#[0-9a-fA-F]{6}$/.test(tBgColor.trim())
+          ? tBgColor.trim()
+          : null,
+        text_color: /^#[0-9a-fA-F]{6}$/.test(tTextColor.trim())
+          ? tTextColor.trim()
+          : null,
+        card_color: /^#[0-9a-fA-F]{6}$/.test(tCardColor.trim())
+          ? tCardColor.trim()
+          : null,
         currency: tCurrency,
         suspended_message: tSuspendedMsg,
         ...(!editingTenant ? { seedDemoTemplate: tSeedDemo } : {}),
@@ -392,8 +476,10 @@ export function SuperAdminClient({
             [
               { key: "overview", label: "الإحصائيات والمقارنة", icon: BarChart3 },
               { key: "tenants", label: `الجهات (${tenants.length})`, icon: Building2 },
+              { key: "orders", label: `الطلبات المسجلة (${orders.length})`, icon: ShoppingBag },
+              { key: "feedbacks", label: `تقييمات التجربة (${feedbacks.length})`, icon: Sparkles },
               { key: "accounts", label: `الحسابات (${profiles.length})`, icon: Users },
-              { key: "messages", label: `الطلبات (${messages.length})`, icon: MessageSquare },
+              { key: "messages", label: `رسائل التواصل (${messages.length})`, icon: MessageSquare },
               { key: "audit", label: "سجل التدقيق", icon: FileText },
               { key: "security", label: "حسابي", icon: KeyRound },
             ] as const
@@ -452,31 +538,58 @@ export function SuperAdminClient({
                 </button>
               </div>
 
-              <TenantMenuManager
-                tenant={managingTenant}
-                isSuperAdmin
-                categories={initialCategories.filter(
-                  (c) => c.tenant_id === managingTenant.id
-                )}
-                items={initialItems.filter(
-                  (i) => i.tenant_id === managingTenant.id
-                )}
-                offers={initialOffers.filter(
-                  (o) => o.tenant_id === managingTenant.id
-                )}
-                wallets={initialWallets.filter(
-                  (w) => w.tenant_id === managingTenant.id
-                )}
-                notifications={initialNotifications.filter(
-                  (n) => n.tenant_id === managingTenant.id
-                )}
-                onTenantUpdated={(updated) => {
-                  setTenants((p) =>
-                    p.map((x) => (x.id === updated.id ? updated : x))
-                  );
-                  setManagingTenant(updated);
-                }}
-              />
+              {loadingTenantMenu ? (
+                <div className="rounded-3xl p-10 text-center glass-panel text-sm text-slate-400">
+                  جاري تحميل قائمة الجهة...
+                </div>
+              ) : (
+                <TenantMenuManager
+                  key={managingTenant.id + (managedMenu ? "-remote" : "-init")}
+                  tenant={managingTenant}
+                  isSuperAdmin
+                  categories={
+                    managedMenu?.tenantId === managingTenant.id
+                      ? managedMenu.categories
+                      : initialCategories.filter(
+                          (c) => c.tenant_id === managingTenant.id
+                        )
+                  }
+                  items={
+                    managedMenu?.tenantId === managingTenant.id
+                      ? managedMenu.items
+                      : initialItems.filter(
+                          (i) => i.tenant_id === managingTenant.id
+                        )
+                  }
+                  offers={
+                    managedMenu?.tenantId === managingTenant.id
+                      ? managedMenu.offers
+                      : initialOffers.filter(
+                          (o) => o.tenant_id === managingTenant.id
+                        )
+                  }
+                  wallets={
+                    managedMenu?.tenantId === managingTenant.id
+                      ? managedMenu.wallets
+                      : initialWallets.filter(
+                          (w) => w.tenant_id === managingTenant.id
+                        )
+                  }
+                  notifications={
+                    managedMenu?.tenantId === managingTenant.id
+                      ? managedMenu.notifications
+                      : initialNotifications.filter(
+                          (n) => n.tenant_id === managingTenant.id
+                        )
+                  }
+                  onTenantUpdated={(updated) => {
+                    setTenants((p) =>
+                      p.map((x) => (x.id === updated.id ? updated : x))
+                    );
+                    setManagingTenant(updated);
+                  }}
+                />
+              )}
             </div>
           ) : (
             (() => {
@@ -515,7 +628,7 @@ export function SuperAdminClient({
                       {demoTenant && (
                         <button
                           type="button"
-                          onClick={() => setManagingTenant(demoTenant)}
+                          onClick={() => openManageTenant(demoTenant)}
                           className="inline-flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-bold border border-brand-orange/40 bg-brand-orange/15 text-brand-orange hover:bg-brand-orange/25 transition"
                         >
                           <FlaskConical className="w-4 h-4" />
@@ -607,7 +720,7 @@ export function SuperAdminClient({
                         <div className="flex flex-wrap gap-2 pt-1">
                           <button
                             type="button"
-                            onClick={() => setManagingTenant(t)}
+                            onClick={() => openManageTenant(t)}
                             className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold bg-brand-orange/15 text-brand-orange border border-brand-orange/30"
                           >
                             <Utensils className="w-3.5 h-3.5" />
@@ -853,6 +966,148 @@ export function SuperAdminClient({
           </div>
         )}
 
+        {/* RECORDED ORDERS (Server-Verified Totals) */}
+        {tab === "orders" && (
+          <div className="space-y-4">
+            <h2 className="text-xl font-black">
+              سجل الطلبات الموثّقة خادمياً ({orders.length})
+            </h2>
+            {orders.length === 0 ? (
+              <div className="rounded-3xl p-10 text-center glass-panel text-slate-400">
+                لا توجد طلبات مسجلة في جدول الطلبات بعد.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {orders.map((ord) => {
+                  const t = tenants.find((x) => x.id === ord.tenant_id);
+                  return (
+                    <div
+                      key={ord.id}
+                      className="rounded-2xl p-4 glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-xs font-black text-brand-orange">
+                            #{ord.order_number}
+                          </span>
+                          {t && (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-brand-orange/15 text-brand-orange font-bold">
+                              {t.name_ar}
+                            </span>
+                          )}
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 font-bold">
+                            {ord.order_type === "delivery" ? "توصيل" : "استلام"}
+                          </span>
+                        </div>
+                        <p className="text-sm font-bold">
+                          {ord.customer_name || "زائر بدون اسم"}{" "}
+                          {ord.customer_phone ? `• ${ord.customer_phone}` : ""}
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          {Array.isArray(ord.items_snapshot)
+                            ? ord.items_snapshot
+                                .map((s) => `${s.name} × ${s.quantity}`)
+                                .join("، ")
+                            : ""}
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          {formatArabicDate(ord.created_at)}
+                        </p>
+                      </div>
+                      <div className="text-left shrink-0">
+                        <p className="font-black text-base text-brand-orange">
+                          {formatPrice(ord.computed_total, ord.currency)}
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          {ord.channel} •{" "}
+                          {ord.payment_method === "wallet" ? "محفظة" : "نقداً"}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* SUPER-ADMIN-ONLY CUSTOMER EXPERIENCE FEEDBACK */}
+        {tab === "feedbacks" && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-black flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-brand-orange" />
+                  <span>تقييمات تجربة العملاء (حصرية لإدارة المنصة)</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  هذا القسم معزول كلياً عن لوحات تحكم المطاعم والمقاهي ولا يظهر إلا
+                  لمدير النظام.
+                </p>
+              </div>
+              {feedbacks.length > 0 && (
+                <div className="px-4 py-2 rounded-2xl glass-panel text-xs font-extrabold text-brand-orange">
+                  المتوسط العام:{" "}
+                  {(
+                    feedbacks.reduce((s, f) => s + f.rating, 0) /
+                    feedbacks.length
+                  ).toFixed(2)}{" "}
+                  / 5
+                </div>
+              )}
+            </div>
+
+            {feedbacks.length === 0 ? (
+              <div className="rounded-3xl p-10 text-center glass-panel text-slate-400">
+                لا توجد تقييمات مرسلة من العملاء بعد.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {feedbacks.map((fb) => {
+                  const t = tenants.find((x) => x.id === fb.tenant_id);
+                  const emoji =
+                    fb.rating === 5
+                      ? "🤩"
+                      : fb.rating === 4
+                        ? "😊"
+                        : fb.rating === 3
+                          ? "🙂"
+                          : fb.rating === 2
+                            ? "😕"
+                            : "😞";
+                  return (
+                    <div
+                      key={fb.id}
+                      className="rounded-2xl p-4 glass-panel space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-extrabold text-brand-orange">
+                          {t?.name_ar || "جهة مسجلة"}
+                        </span>
+                        <span className="text-sm font-black">
+                          {emoji} {fb.rating}/5
+                        </span>
+                      </div>
+                      {fb.comment ? (
+                        <p className="text-xs leading-relaxed text-slate-200">
+                          {fb.comment}
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-slate-500">
+                          تقييم بالرمز التعبيري فقط بدون ملاحظة نصية
+                        </p>
+                      )}
+                      <p className="text-[11px] text-slate-500">
+                        {formatArabicDate(fb.created_at)}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* AUDIT LOG */}
         {tab === "audit" && (
           <div className="space-y-3">
@@ -1018,13 +1273,52 @@ export function SuperAdminClient({
               </div>
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400">
+                  لون الخلفية المخصص (اختياري #hex)
+                </label>
+                <input
+                  dir="ltr"
+                  value={tBgColor}
+                  onChange={(e) => setTBgColor(e.target.value)}
+                  placeholder="تلقائي حسب الشعار"
+                  className="w-full rounded-xl px-3 py-2 text-xs bg-slate-100 dark:bg-navy-900 border border-white/15"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400">
+                  لون النص المخصص (اختياري #hex)
+                </label>
+                <input
+                  dir="ltr"
+                  value={tTextColor}
+                  onChange={(e) => setTTextColor(e.target.value)}
+                  placeholder="تلقائي مع فحص التباين"
+                  className="w-full rounded-xl px-3 py-2 text-xs bg-slate-100 dark:bg-navy-900 border border-white/15"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400">
+                  لون البطاقات المخصص (اختياري #hex)
+                </label>
+                <input
+                  dir="ltr"
+                  value={tCardColor}
+                  onChange={(e) => setTCardColor(e.target.value)}
+                  placeholder="تلقائي متناسق"
+                  className="w-full rounded-xl px-3 py-2 text-xs bg-slate-100 dark:bg-navy-900 border border-white/15"
+                />
+              </div>
+            </div>
+
             <div className="flex flex-wrap gap-3">
               <label className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold bg-brand-orange/15 text-brand-orange border border-brand-orange/30 cursor-pointer">
                 <Upload className="w-4 h-4" />
                 <span>{tLogoUrl ? "تغيير الشعار ✓" : "رفع شعار الجهة"}</span>
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                   onChange={async (e) => {
                     const f = e.target.files?.[0];
@@ -1039,7 +1333,7 @@ export function SuperAdminClient({
                 <span>{tCoverUrl ? "تغيير الغلاف ✓" : "رفع صورة الغلاف"}</span>
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                   onChange={async (e) => {
                     const f = e.target.files?.[0];

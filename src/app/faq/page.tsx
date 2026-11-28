@@ -1,29 +1,38 @@
-"use client";
-
-import { useState } from "react";
 import Link from "next/link";
-import { motion, AnimatePresence } from "framer-motion";
-import { ChevronDown, HelpCircle, ArrowLeft } from "lucide-react";
+import { HelpCircle, ArrowLeft } from "lucide-react";
 import { Navbar } from "@/components/layout/navbar";
 import { Footer } from "@/components/layout/footer";
-import { cn } from "@/lib/utils";
+import { FaqAccordion, type FaqEntry } from "@/components/marketing/faq-accordion";
+import type { Metadata } from "next";
 
-const faqs = [
+export const metadata: Metadata = {
+  title: "الأسئلة الشائعة",
+  description:
+    "إجابات واضحة حول منصة مينوز (MENUZ) للقوائم الرقمية الذكية، طريقة التفعيل، استقبال الطلبات، والمحافظ الإلكترونية.",
+  openGraph: {
+    title: "الأسئلة الشائعة | مينوز MENUZ",
+    description:
+      "كل ما تريد معرفته حول تفعيل وإدارة المنيو الرقمي عبر منصة مينوز.",
+    images: [{ url: "/branding/menuz_brand_showcase.png", width: 1200, height: 800 }],
+  },
+};
+
+const faqs: FaqEntry[] = [
   {
     q: "كيف أطلب إنشاء منيو رقمي لمطعمي أو مقهاي على منصة مينوز؟",
     a: "تواصل مع إدارة النظام عبر صفحة «اتصل بنا» أو على الرقم 776951100، وسنقوم بتجهيز صفحة مطعمك وهويته اللونية وإضافة القائمة الأولى وتزويدك ببيانات الدخول ورمز QR جاهز للطباعة.",
   },
   {
     q: "هل يحتاج الزبون إلى تحميل تطبيق لفتح المنيو؟",
-    a: "لا أبداً! بمجرد مسح رمز الـ QR بكاميرا الجوال يُفتح المنيو فوراً في المتصفح خلال ثوانٍ، كما يمكن لمن يرغب تثبيته كتطبيق خفيف (PWA) على الشاشة الرئيسية.",
+    a: "لا أبداً! بمجرد مسح رمز الـ QR بكاميرا الجوال يُفتح المنيو فوراً في المتصفح خلال ثوانٍ، كما يمكن لمن يرغب تثبيته كتطبيق خفيف على الشاشة الرئيسية.",
   },
   {
     q: "كيف تصلني طلبات العملاء؟",
-    a: "عند إتمام العميل اختيار أصنافه من السلة، يقوم النظام بتجهيز فاتورة منسقة تحتوي على الأصناف والكميات والإجمالي والعنوان وطريقة الدفع (نقدي أو محفظة إلكترونية مع رقم العملية)، ويرسلها مباشرة إلى رقم الواتساب الخاص بك أو رسالة SMS.",
+    a: "عند إتمام العميل اختيار أصنافه من السلة، يقوم النظام بتجهيز فاتورة منسقة تحتوي على الأصناف والكميات والإجمالي والعنوان وطريقة الدفع (نقدي أو محفظة إلكترونية مع رقم العملية)، ويرسلها مباشرة إلى رقم الواتساب الخاص بك أو رسالة نصية.",
   },
   {
     q: "هل أستطيع تعديل الأسعار أو إخفاء صنف نفدت كميته بنفسي؟",
-    a: "نعم، من خلال لوحة التحكم الخاصة بك (/dashboard) يمكنك تعديل الأسعار، إضافة أصناف جديدة، رفع الصور، تغيير حالة التوفر (متوفر / غير متوفر)، وجدولة العروض في أي وقت ومن أي جهاز.",
+    a: "نعم، من خلال لوحة التحكم الخاصة بك يمكنك تعديل الأسعار، إضافة أصناف جديدة، رفع الصور، تغيير حالة التوفر (متوفر / غير متوفر)، وجدولة العروض في أي وقت ومن أي جهاز.",
   },
   {
     q: "ما هي المحافظ الإلكترونية المدعومة؟",
@@ -31,13 +40,11 @@ const faqs = [
   },
   {
     q: "هل بيانات مطعمي معزولة وآمنة عن بقية المشتركين؟",
-    a: "بالتأكيد. كل جهة تعمل ضمن بيئة معزولة بالكامل على مستوى قاعدة البيانات عبر سياسات Row Level Security (RLS)، ولا يمكن لأي مطعم الاطلاع على بيانات أو إحصائيات مطعم آخر.",
+    a: "بالتأكيد. كل جهة تعمل ضمن بيئة معزولة بالكامل بصلاحيات صارمة على مستوى الخادم وقاعدة البيانات، ولا يمكن لأي مطعم الاطلاع على بيانات أو إحصائيات مطعم آخر.",
   },
 ];
 
 export default function FaqPage() {
-  const [openIdx, setOpenIdx] = useState<number | null>(0);
-
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar />
@@ -54,49 +61,7 @@ export default function FaqPage() {
             </h1>
           </div>
 
-          <div className="space-y-4">
-            {faqs.map((item, idx) => {
-              const isOpen = openIdx === idx;
-              return (
-                <div
-                  key={item.q}
-                  className={cn(
-                    "rounded-2xl glass-panel overflow-hidden transition-colors",
-                    isOpen && "border-brand-orange/50"
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setOpenIdx(isOpen ? null : idx)}
-                    className="w-full px-6 py-5 flex items-center justify-between gap-4 text-right font-bold text-base sm:text-lg"
-                  >
-                    <span>{item.q}</span>
-                    <ChevronDown
-                      className={cn(
-                        "w-5 h-5 text-brand-orange shrink-0 transition-transform duration-300",
-                        isOpen && "rotate-180"
-                      )}
-                    />
-                  </button>
-                  <AnimatePresence initial={false}>
-                    {isOpen && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: "auto", opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.25 }}
-                        className="overflow-hidden"
-                      >
-                        <div className="px-6 pb-5 pt-1 text-sm sm:text-base leading-relaxed text-navy-600 dark:text-slate-300 border-t border-navy-700/10 dark:border-white/10">
-                          {item.a}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              );
-            })}
-          </div>
+          <FaqAccordion faqs={faqs} />
 
           <div className="rounded-3xl p-8 glass-panel text-center space-y-4">
             <h2 className="text-xl font-extrabold">لديك سؤال آخر؟</h2>

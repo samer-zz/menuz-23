@@ -132,7 +132,7 @@ export function PwaInstallButton({
                 </h3>
                 <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-300 leading-relaxed">
                   يُفتح التطبيق مباشرة على نفس هذه الصفحة بملء الشاشة وبسرعة
-                  فائقة حتى مع ضعف الاتصال.
+                  فائقة، وتبقى القائمة متاحة للعرض السريع عند ضعف الاتصال.
                 </p>
               </div>
 
@@ -192,5 +192,145 @@ export function PwaInstallButton({
         )}
       </AnimatePresence>
     </>
+  );
+}
+
+/**
+ * First-visit subtle, dismissible PWA onboarding hint.
+ * Only renders an install action when native `beforeinstallprompt` is supported
+ * or iOS Safari manual instructions apply; never repeats after dismissal.
+ */
+export function PwaOnboardingHint({
+  slug,
+  appTitle,
+  accentColor,
+  buttonTextColor,
+}: {
+  slug: string;
+  appTitle: string;
+  accentColor: string;
+  buttonTextColor: string;
+}) {
+  const [visible, setVisible] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] =
+    useState<BeforeInstallPromptEvent | null>(null);
+  const [isIos, setIsIos] = useState(false);
+  const [showIosGuide, setShowIosGuide] = useState(false);
+  const { toast } = useApp();
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      // @ts-expect-error Safari standalone flag
+      window.navigator.standalone === true;
+    if (standalone) return;
+
+    const storageKey = `menuz-pwa-hint-dismissed-${slug}`;
+    try {
+      if (localStorage.getItem(storageKey)) return;
+    } catch {
+      return;
+    }
+
+    const ua = window.navigator.userAgent.toLowerCase();
+    const iosDevice = /iphone|ipad|ipod/.test(ua);
+    setIsIos(iosDevice);
+
+    const onPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e as BeforeInstallPromptEvent);
+      setVisible(true);
+    };
+
+    window.addEventListener("beforeinstallprompt", onPrompt);
+
+    // On iOS Safari show the helpful hint briefly since beforeinstallprompt does not exist on WebKit
+    const timer = iosDevice ? setTimeout(() => setVisible(true), 2800) : null;
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onPrompt);
+      if (timer) clearTimeout(timer);
+    };
+  }, [slug]);
+
+  const dismiss = () => {
+    setVisible(false);
+    try {
+      localStorage.setItem(`menuz-pwa-hint-dismissed-${slug}`, "1");
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleInstall = async () => {
+    if (deferredPrompt) {
+      await deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice.outcome === "accepted") {
+        toast("تم تثبيت المنيو كتطبيق بنجاح!", "success");
+      }
+      dismiss();
+      return;
+    }
+    if (isIos) {
+      setShowIosGuide((v) => !v);
+    }
+  };
+
+  if (!visible || (!deferredPrompt && !isIos)) return null;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: 18 }}
+        className="max-w-5xl mx-auto px-4 sm:px-6 pt-4"
+      >
+        <div className="rounded-2xl p-3.5 sm:p-4 glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+              style={{ backgroundColor: accentColor, color: buttonTextColor }}
+            >
+              <Smartphone className="w-4 h-4" />
+            </div>
+            <div className="space-y-0.5 text-xs">
+              <p className="font-extrabold">
+                ثبّت منيو «{appTitle}» على شاشتك الرئيسية
+              </p>
+              <p className="text-slate-500 dark:text-slate-300">
+                فتح أسرع، تصفح مريح بملء الشاشة، ووصول سريع حتى مع ضعف الشبكة.
+              </p>
+              {showIosGuide && (
+                <p className="pt-1 font-semibold" style={{ color: accentColor }}>
+                  في سفاري: اضغط أيقونة المشاركة (Share) ثم «إضافة إلى الشاشة الرئيسية».
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+            <button
+              type="button"
+              onClick={handleInstall}
+              className="px-3.5 py-2 rounded-xl text-xs font-extrabold transition hover:brightness-110"
+              style={{ backgroundColor: accentColor, color: buttonTextColor }}
+            >
+              {isIos ? "طريقة التثبيت" : "تثبيت الآن"}
+            </button>
+            <button
+              type="button"
+              onClick={dismiss}
+              className="p-2 rounded-xl hover:bg-black/10 dark:hover:bg-white/10 transition"
+              aria-label="إغلاق التلميح"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </AnimatePresence>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { AnimatePresence, motion } from "framer-motion";
@@ -34,25 +34,39 @@ import {
   CupSoda,
   Sandwich,
   Bell,
+  BellRing,
   LayoutGrid,
   List,
   BookOpen,
   Home,
   FlaskConical,
+  WifiOff,
+  RefreshCw,
+  RotateCcw,
+  Share2,
+  Loader2,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useApp } from "@/components/providers/theme-provider";
 import { MenuzLogo, SamerzLogo } from "@/components/ui/brand-logo";
-import { PwaInstallButton } from "@/components/pwa/install-button";
+import { PwaInstallButton, PwaOnboardingHint } from "@/components/pwa/install-button";
 import { EmptyStateCard } from "@/components/ui/skeletons";
+import {
+  ThankYouFeedbackModal,
+  type CompletedOrderSummary,
+} from "@/components/menu/thank-you-feedback-modal";
+import {
+  resolveTenantTheme,
+  type ResolvedTenantTheme,
+} from "@/lib/theme-colors";
 import {
   buildSmsUrl,
   buildWhatsAppUrl,
   cn,
   formatArabicDate,
-  formatInvoiceMessage,
   formatPrice,
   isOfferCurrentlyActive,
+  normalizePhoneForWhatsApp,
 } from "@/lib/utils";
 import type {
   Category,
@@ -69,7 +83,14 @@ interface CartLine {
   quantity: number;
 }
 
+interface StoredLastOrder {
+  savedAt: number;
+  lines: Array<{ id: string; quantity: number }>;
+}
+
 type ViewMode = "cards" | "list" | "classic";
+
+const LAST_ORDER_TTL_MS = 15 * 60 * 1000;
 
 const BADGE_META: Record<MenuBadge, { label: string; className: string }> = {
   best_seller: {
@@ -82,7 +103,7 @@ const BADGE_META: Record<MenuBadge, { label: string; className: string }> = {
   },
   limited_offer: {
     label: "⏰ عرض محدود",
-    className: "bg-brand-orange/20 text-brand-amber border-brand-orange/35",
+    className: "bg-amber-500/20 text-amber-300 border-amber-500/35",
   },
   unavailable: {
     label: "🚫 غير متوفر",
@@ -90,11 +111,46 @@ const BADGE_META: Record<MenuBadge, { label: string; className: string }> = {
   },
 };
 
+function sanitizeExternalSocialUrl(
+  platform: "instagram" | "facebook" | "tiktok",
+  raw: string | null | undefined
+): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (/^(javascript|data|vbscript):/i.test(trimmed)) return null;
+
+  if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) {
+    try {
+      const u = new URL(trimmed);
+      if (u.protocol === "https:" || u.protocol === "http:") return trimmed;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  const handle = trimmed.replace(/^@+/, "");
+  if (!handle) return null;
+  if (platform === "instagram") return `https://instagram.com/${encodeURIComponent(handle)}`;
+  if (platform === "facebook") return `https://facebook.com/${encodeURIComponent(handle)}`;
+  return `https://tiktok.com/@${encodeURIComponent(handle)}`;
+}
+
+function makeIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID().replace(/-/g, "");
+  }
+  return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
 function DishArtFallback({
   name,
+  themeColors,
   compact = false,
 }: {
   name: string;
+  themeColors: ResolvedTenantTheme;
   compact?: boolean;
 }) {
   const lower = name.toLowerCase();
@@ -110,24 +166,130 @@ function DishArtFallback({
           : UtensilsCrossed;
 
   return (
-    <div className="w-full h-full bg-gradient-to-br from-[#0B2D5B] via-[#081F44] to-[#040E21] flex items-center justify-center relative overflow-hidden">
-      <div className="absolute -top-6 -right-6 w-16 h-16 rounded-full bg-brand-orange/20 blur-xl" />
-      <div className="absolute -bottom-6 -left-6 w-20 h-20 rounded-full bg-brand-amber/20 blur-xl" />
+    <div
+      className="w-full h-full flex items-center justify-center relative overflow-hidden"
+      style={{
+        background: `linear-gradient(135deg, ${themeColors.primary} 0%, ${themeColors.background} 100%)`,
+      }}
+    >
       <div
-        aria-hidden="true"
-        className="absolute inset-0 opacity-20"
-        style={{
-          backgroundImage:
-            "linear-gradient(135deg, rgba(255,122,0,0.35) 1px, transparent 1px)",
-          backgroundSize: "16px 16px",
-        }}
+        className="absolute -top-6 -right-6 w-16 h-16 rounded-full blur-xl opacity-30"
+        style={{ backgroundColor: themeColors.accent }}
       />
       <Icon
         className={cn(
-          "text-brand-orange relative z-10 drop-shadow",
+          "relative z-10 drop-shadow",
           compact ? "w-6 h-6" : "w-9 h-9"
         )}
+        style={{ color: themeColors.accent }}
       />
+    </div>
+  );
+}
+
+function TenantSocialIcons({
+  tenant,
+  themeColors,
+  inHeader = false,
+}: {
+  tenant: Tenant;
+  themeColors: ResolvedTenantTheme;
+  inHeader?: boolean;
+}) {
+  const whatsappDigits = normalizePhoneForWhatsApp(tenant.whatsapp || tenant.phone);
+  const instagramUrl = sanitizeExternalSocialUrl("instagram", tenant.instagram);
+  const facebookUrl = sanitizeExternalSocialUrl("facebook", tenant.facebook);
+  const tiktokUrl = sanitizeExternalSocialUrl("tiktok", tenant.tiktok);
+
+  const links: Array<{
+    key: string;
+    href: string;
+    label: string;
+    text: string;
+    external?: boolean;
+  }> = [];
+
+  if (tenant.phone) {
+    links.push({
+      key: "phone",
+      href: `tel:${tenant.phone.trim()}`,
+      label: "اتصال هاتفي",
+      text: "اتصال",
+    });
+  }
+  if (whatsappDigits) {
+    links.push({
+      key: "whatsapp",
+      href: `https://wa.me/${whatsappDigits}`,
+      label: "واتساب",
+      text: "واتساب",
+      external: true,
+    });
+  }
+  if (instagramUrl) {
+    links.push({
+      key: "instagram",
+      href: instagramUrl,
+      label: "إنستغرام",
+      text: "إنستغرام",
+      external: true,
+    });
+  }
+  if (facebookUrl) {
+    links.push({
+      key: "facebook",
+      href: facebookUrl,
+      label: "فيسبوك",
+      text: "فيسبوك",
+      external: true,
+    });
+  }
+  if (tiktokUrl) {
+    links.push({
+      key: "tiktok",
+      href: tiktokUrl,
+      label: "تيك توك",
+      text: "تيك توك",
+      external: true,
+    });
+  }
+
+  if (links.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {links.map((item) => (
+        <a
+          key={item.key}
+          href={item.href}
+          target={item.external ? "_blank" : undefined}
+          rel={item.external ? "noopener noreferrer" : undefined}
+          aria-label={item.label}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition hover:scale-[1.03]",
+            inHeader
+              ? "bg-white/10 border border-white/20 text-white hover:bg-white/20"
+              : "border"
+          )}
+          style={
+            inHeader
+              ? undefined
+              : {
+                  backgroundColor: themeColors.card,
+                  borderColor: themeColors.border,
+                  color: themeColors.text,
+                }
+          }
+        >
+          {item.key === "phone" && <Phone className="w-3.5 h-3.5" style={{ color: themeColors.accent }} />}
+          {item.key === "whatsapp" && <MessageCircle className="w-3.5 h-3.5 text-emerald-400" />}
+          {item.key === "instagram" && <Instagram className="w-3.5 h-3.5" style={{ color: themeColors.accent }} />}
+          {(item.key === "facebook" || item.key === "tiktok") && (
+            <Share2 className="w-3.5 h-3.5" style={{ color: themeColors.accent }} />
+          )}
+          <span>{item.text}</span>
+        </a>
+      ))}
     </div>
   );
 }
@@ -148,6 +310,11 @@ export function PublicMenuClient({
   initialNotifications?: TenantNotification[];
 }) {
   const { theme, toggleTheme, toast } = useApp();
+  const themeColors = useMemo(
+    () => resolveTenantTheme(tenant, theme),
+    [tenant, theme]
+  );
+
   const [search, setSearch] = useState("");
   const [badgeFilter, setBadgeFilter] = useState<MenuBadge | "all">("all");
   const [activeCategoryId, setActiveCategoryId] = useState<string>(
@@ -155,13 +322,22 @@ export function PublicMenuClient({
   );
   const [viewMode, setViewMode] = useState<ViewMode>("cards");
   const [showSplash, setShowSplash] = useState(false);
+  const [isOffline, setIsOffline] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
 
-  // Notifications state (Realtime In-App)
+  // Featured carousel auto-scroll pause state
+  const featuredStripRef = useRef<HTMLDivElement | null>(null);
+  const [featuredPaused, setFeaturedPaused] = useState(false);
+
+  // Notifications & Web Push state
   const [notifications, setNotifications] = useState<TenantNotification[]>(
     initialNotifications
   );
   const [notifOpen, setNotifOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(initialNotifications.length);
+  const [pushSupported, setPushSupported] = useState(false);
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [subscribingPush, setSubscribingPush] = useState(false);
 
   const [storyOpen, setStoryOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null);
@@ -170,7 +346,7 @@ export function PublicMenuClient({
   const [invoiceStep, setInvoiceStep] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Checkout state
+  // Checkout state (Name & Phone are OPTIONAL per spec)
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [orderType, setOrderType] = useState<"delivery" | "pickup">(
@@ -183,6 +359,13 @@ export function PublicMenuClient({
   );
   const [transactionRef, setTransactionRef] = useState("");
   const [orderNotes, setOrderNotes] = useState("");
+  const [submittingOrder, setSubmittingOrder] = useState(false);
+  const [idempotencyKey, setIdempotencyKey] = useState(() => makeIdempotencyKey());
+  const [completedOrder, setCompletedOrder] =
+    useState<CompletedOrderSummary | null>(null);
+  const [restorableOrder, setRestorableOrder] = useState<StoredLastOrder | null>(
+    null
+  );
 
   const activeOffers = useMemo(
     () => offers.filter((o) => isOfferCurrentlyActive(o)),
@@ -201,22 +384,55 @@ export function PublicMenuClient({
     link.href = manifestHref;
   }, [tenant.slug]);
 
-  // 2. CSS-only <=1s Welcome Splash once per session
+  // 2. Network status, reduced-motion, and Web Push support detection
   useEffect(() => {
-    const key = `menuz-splash-${tenant.slug}`;
+    if (typeof window === "undefined") return;
+    setIsOffline(!window.navigator.onLine);
+    const goOffline = () => setIsOffline(true);
+    const goOnline = () => {
+      setIsOffline(false);
+      toast("عاد الاتصال بالإنترنت — يمكنك تحديث المنيو", "info");
+    };
+    window.addEventListener("offline", goOffline);
+    window.addEventListener("online", goOnline);
+
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReducedMotion(mq.matches);
+    const onMq = (e: MediaQueryListEvent) => setReducedMotion(e.matches);
+    mq.addEventListener?.("change", onMq);
+
+    if ("Notification" in window && "serviceWorker" in navigator && "PushManager" in window) {
+      setPushSupported(true);
+      navigator.serviceWorker.ready
+        .then((reg) => reg.pushManager.getSubscription())
+        .then((sub) => setPushSubscribed(Boolean(sub)))
+        .catch(() => {});
+    }
+
+    return () => {
+      window.removeEventListener("offline", goOffline);
+      window.removeEventListener("online", goOnline);
+      mq.removeEventListener?.("change", onMq);
+    };
+  }, [toast]);
+
+  // 3. Smooth 3.2s skippable welcome splash (once per session, respects reduced-motion)
+  useEffect(() => {
+    if (reducedMotion) return;
+    const key = `menuz-splash-v4-${tenant.slug}`;
     try {
       if (!sessionStorage.getItem(key)) {
         sessionStorage.setItem(key, "1");
         setShowSplash(true);
-        const timer = setTimeout(() => setShowSplash(false), 950);
+        const timer = setTimeout(() => setShowSplash(false), 3200);
         return () => clearTimeout(timer);
       }
     } catch {
       // ignore sessionStorage errors
     }
-  }, [tenant.slug]);
+  }, [tenant.slug, reducedMotion]);
 
-  // 3. Load & persist ViewMode in localStorage
+  // 4. Load & persist ViewMode in localStorage
   useEffect(() => {
     try {
       const saved = localStorage.getItem("menuz-view-mode") as ViewMode | null;
@@ -237,23 +453,28 @@ export function PublicMenuClient({
     }
   };
 
-  // 4. Record 1 menu_scan per browser session
+  // 5. Record 1 menu_scan per browser session
   useEffect(() => {
     if (!tenant.is_active) return;
-    const key = `menuz-scanned-${tenant.id}`;
-    if (sessionStorage.getItem(key)) return;
-    sessionStorage.setItem(key, "1");
+    try {
+      const key = `menuz-scanned-${tenant.id}`;
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, "1");
+    } catch {
+      // ignore
+    }
 
-    const supabase = createClient();
-    supabase
-      .rpc("record_menu_event", {
-        p_tenant_id: tenant.id,
-        p_event_type: "menu_scan",
-      })
-      .then(() => {});
+    fetch("/api/analytics/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId: tenant.id,
+        eventType: "menu_scan",
+      }),
+    }).catch(() => {});
   }, [tenant.id, tenant.is_active]);
 
-  // 5. Subscribe to Supabase Realtime for In-App Notifications
+  // 6. Subscribe to Supabase Realtime for In-App Notifications
   useEffect(() => {
     if (!tenant.is_active) return;
     const supabase = createClient();
@@ -270,6 +491,12 @@ export function PublicMenuClient({
         (payload) => {
           const incoming = payload.new as TenantNotification;
           if (new Date(incoming.expires_at).getTime() <= Date.now()) return;
+          if (
+            incoming.scheduled_for &&
+            new Date(incoming.scheduled_for).getTime() > Date.now()
+          ) {
+            return;
+          }
           setNotifications((prev) => [incoming, ...prev]);
           setUnreadCount((c) => c + 1);
           toast(`🔔 ${incoming.title}: ${incoming.body}`, "info");
@@ -297,7 +524,7 @@ export function PublicMenuClient({
     };
   }, [tenant.id, tenant.is_active, toast]);
 
-  // 6. Load & persist cart for this tenant
+  // 7. Load & persist cart + check recent restorable order
   useEffect(() => {
     try {
       const raw = localStorage.getItem(`menuz-cart-${tenant.slug}`);
@@ -311,6 +538,21 @@ export function PublicMenuClient({
           }
         }
         setCart(restored);
+      }
+
+      const lastRaw = localStorage.getItem(`menuz-last-order-${tenant.slug}`);
+      if (lastRaw) {
+        const parsedLast = JSON.parse(lastRaw) as StoredLastOrder;
+        if (
+          parsedLast?.savedAt &&
+          Date.now() - parsedLast.savedAt < LAST_ORDER_TTL_MS &&
+          Array.isArray(parsedLast.lines) &&
+          parsedLast.lines.length > 0
+        ) {
+          setRestorableOrder(parsedLast);
+        } else {
+          localStorage.removeItem(`menuz-last-order-${tenant.slug}`);
+        }
       }
     } catch {
       // ignore storage errors
@@ -330,6 +572,30 @@ export function PublicMenuClient({
     () => items.filter((i) => i.is_featured && i.is_available),
     [items]
   );
+
+  // 8. Smooth auto-scrolling featured strip (pauses on user interaction & reduced-motion)
+  useEffect(() => {
+    if (reducedMotion || featuredPaused || featuredItems.length < 2) return;
+    const el = featuredStripRef.current;
+    if (!el) return;
+
+    const timer = setInterval(() => {
+      if (!featuredStripRef.current) return;
+      const node = featuredStripRef.current;
+      const maxScroll = node.scrollWidth - node.clientWidth;
+      if (maxScroll <= 10) return;
+      // In RTL, scrollLeft is often <= 0 or moves inversely across browsers; step gently and wrap cleanly
+      const next = Math.abs(node.scrollLeft) + 260;
+      if (next >= maxScroll) {
+        node.scrollTo({ left: 0, behavior: "smooth" });
+      } else {
+        const dir = getComputedStyle(node).direction === "rtl" ? -1 : 1;
+        node.scrollBy({ left: dir * 260, behavior: "smooth" });
+      }
+    }, 3400);
+
+    return () => clearInterval(timer);
+  }, [reducedMotion, featuredPaused, featuredItems.length]);
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -358,21 +624,24 @@ export function PublicMenuClient({
   const getQty = (id: string) =>
     cart.find((c) => c.item.id === id)?.quantity || 0;
 
-  const addToCart = (item: MenuItem) => {
-    if (!item.is_available || item.badges.includes("unavailable")) return;
-    setCart((prev) => {
-      const existing = prev.find((c) => c.item.id === item.id);
-      if (existing) {
-        return prev.map((c) =>
-          c.item.id === item.id ? { ...c, quantity: c.quantity + 1 } : c
-        );
-      }
-      return [...prev, { item, quantity: 1 }];
-    });
-    toast(`تمت إضافة «${item.name}» إلى السلة`, "success");
-  };
+  const addToCart = useCallback(
+    (item: MenuItem) => {
+      if (!item.is_available || item.badges.includes("unavailable")) return;
+      setCart((prev) => {
+        const existing = prev.find((c) => c.item.id === item.id);
+        if (existing) {
+          return prev.map((c) =>
+            c.item.id === item.id ? { ...c, quantity: c.quantity + 1 } : c
+          );
+        }
+        return [...prev, { item, quantity: 1 }];
+      });
+      toast(`تمت إضافة «${item.name}» للسلة`, "success");
+    },
+    [toast]
+  );
 
-  const updateQty = (itemId: string, delta: number) => {
+  const updateQty = useCallback((itemId: string, delta: number) => {
     setCart((prev) =>
       prev
         .map((c) =>
@@ -380,25 +649,53 @@ export function PublicMenuClient({
         )
         .filter((c) => c.quantity > 0)
     );
-  };
+  }, []);
+
+  const clearCart = useCallback(() => {
+    setCart([]);
+    setIdempotencyKey(makeIdempotencyKey());
+    toast("تم إفراغ السلة", "info");
+  }, [toast]);
+
+  const restoreLastOrder = useCallback(() => {
+    if (!restorableOrder) return;
+    const restored: CartLine[] = [];
+    for (const row of restorableOrder.lines) {
+      const found = items.find((i) => i.id === row.id && i.is_available);
+      if (found && row.quantity > 0) {
+        restored.push({ item: found, quantity: row.quantity });
+      }
+    }
+    if (restored.length === 0) {
+      toast("أصناف الطلب السابق لم تعد متوفرة", "error");
+      return;
+    }
+    setCart(restored);
+    setCompletedOrder(null);
+    setInvoiceStep(false);
+    setCartOpen(true);
+    setIdempotencyKey(makeIdempotencyKey());
+    toast("تمت استعادة أصناف طلبك السابق", "success");
+  }, [restorableOrder, items, toast]);
 
   const openItemDetail = (item: MenuItem) => {
     setSelectedItem(item);
-    const supabase = createClient();
-    supabase
-      .rpc("record_menu_event", {
-        p_tenant_id: tenant.id,
-        p_event_type: "item_view",
-        p_item_id: item.id,
-      })
-      .then(() => {});
+    fetch("/api/analytics/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId: tenant.id,
+        eventType: "item_view",
+        itemId: item.id,
+      }),
+    }).catch(() => {});
   };
 
   const copyText = async (text: string, id: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedId(id);
-      toast(`تم نسخ ${label}: ${text}`, "success");
+      toast(`تم نسخ ${label}`, "success");
       setTimeout(() => setCopiedId(null), 2000);
     } catch {
       toast("تعذر النسخ التلقائي", "error");
@@ -416,48 +713,87 @@ export function PublicMenuClient({
   const selectedWallet =
     wallets.find((w) => w.id === selectedWalletId) || wallets[0];
 
-  const invoiceMessage = useMemo(() => {
-    return formatInvoiceMessage({
-      tenantName: tenant.name_ar,
-      currency: tenant.currency || "ر.ي",
-      items: cart.map((c) => ({
-        name: c.item.name,
-        quantity: c.quantity,
-        price: Number(c.item.price),
-      })),
-      total: cartTotal,
-      customerName: customerName || "عميل",
-      customerPhone: customerPhone || "-",
-      orderType,
-      deliveryAddress: deliveryAddress || undefined,
-      paymentMethod,
-      walletName: selectedWallet?.name,
-      walletAccount: selectedWallet?.account_number,
-      transactionRef: transactionRef || undefined,
-      notes: orderNotes || undefined,
-    });
-  }, [
-    tenant.name_ar,
-    tenant.currency,
-    cart,
-    cartTotal,
-    customerName,
-    customerPhone,
-    orderType,
-    deliveryAddress,
-    paymentMethod,
-    selectedWallet,
-    transactionRef,
-    orderNotes,
-  ]);
+  const handleToggleWebPush = async () => {
+    if (!pushSupported || subscribingPush) return;
+    setSubscribingPush(true);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if (pushSubscribed) {
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          await fetch("/api/push/subscribe", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tenantId: tenant.id, endpoint: sub.endpoint }),
+          });
+          await sub.unsubscribe();
+        }
+        setPushSubscribed(false);
+        toast("تم إلغاء الاشتراك في إشعارات المتصفح", "info");
+        return;
+      }
 
-  const validateCheckout = (): boolean => {
-    if (!customerName.trim()) {
-      toast("يرجى كتابة اسمك لإتمام الطلب", "error");
-      return false;
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        toast("لم يتم منح صلاحية الإشعارات من المتصفح", "info");
+        return;
+      }
+
+      const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      if (!vapidKey) {
+        toast(
+          "تم تفعيل تنبيهات الإشعارات داخل المنيو (مفتاح Web Push الخارجي غير مضاف بعد)",
+          "info"
+        );
+        return;
+      }
+
+      const urlBase64ToUint8Array = (base64String: string) => {
+        const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+        const base64 = (base64String + padding)
+          .replace(/-/g, "+")
+          .replace(/_/g, "/");
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) {
+          outputArray[i] = rawData.charCodeAt(i);
+        }
+        return outputArray;
+      };
+
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidKey),
+      });
+      const json = sub.toJSON();
+      if (json.endpoint && json.keys?.p256dh && json.keys?.auth) {
+        const res = await fetch("/api/push/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tenantId: tenant.id,
+            subscription: {
+              endpoint: json.endpoint,
+              keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+            },
+          }),
+        });
+        if (res.ok) {
+          setPushSubscribed(true);
+          toast("تم الاشتراك في إشعارات العروض بنجاح!", "success");
+        }
+      }
+    } catch {
+      toast("تعذر تفعيل إشعارات المتصفح على هذا الجهاز", "info");
+    } finally {
+      setSubscribingPush(false);
     }
-    if (!customerPhone.trim()) {
-      toast("يرجى كتابة رقم الجوال للتواصل", "error");
+  };
+
+  // Validate only required fields (Name & Phone are intentionally OPTIONAL)
+  const validateCheckout = (): boolean => {
+    if (cart.length === 0) {
+      toast("السلة فارغة", "error");
       return false;
     }
     if (orderType === "delivery" && !deliveryAddress.trim()) {
@@ -468,50 +804,126 @@ export function PublicMenuClient({
       toast("يرجى إدخال رقم عملية التحويل للمحفظة الإلكترونية", "error");
       return false;
     }
+    if (
+      customerPhone.trim() &&
+      !/^[+0-9\s()-]{6,25}$/.test(customerPhone.trim())
+    ) {
+      toast("يرجى التأكد من صيغة رقم الجوال أو تركه فارغاً", "error");
+      return false;
+    }
     return true;
   };
 
-  const handleSendOrder = (channel: "whatsapp" | "sms") => {
+  const handleSendOrder = async (channel: "whatsapp" | "sms") => {
+    if (submittingOrder) return;
     if (!validateCheckout()) return;
 
-    const supabase = createClient();
-    supabase
-      .rpc("record_menu_event", {
-        p_tenant_id: tenant.id,
-        p_event_type: "order_submit",
-        p_metadata: {
+    setSubmittingOrder(true);
+    try {
+      const res = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenantId: tenant.id,
+          idempotencyKey,
+          items: cart.map((c) => ({
+            itemId: c.item.id,
+            quantity: c.quantity,
+          })),
+          customerName: customerName.trim(),
+          customerPhone: customerPhone.trim(),
+          orderType,
+          deliveryAddress:
+            orderType === "delivery" ? deliveryAddress.trim() : "",
+          paymentMethod,
+          walletId: paymentMethod === "wallet" ? selectedWallet?.id ?? null : null,
+          transactionRef:
+            paymentMethod === "wallet" ? transactionRef.trim() : "",
+          notes: orderNotes.trim(),
           channel,
-          total: cartTotal,
-          items_count: cartCount,
-          payment_method: paymentMethod,
-        },
-      })
-      .then(() => {});
+        }),
+      });
 
-    const url =
-      channel === "whatsapp"
-        ? buildWhatsAppUrl(tenant.whatsapp || tenant.phone, invoiceMessage)
-        : buildSmsUrl(tenant.phone, invoiceMessage);
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || !payload.ok) {
+        // Never empty cart on failure
+        toast(
+          payload.error || "تعذر إرسال الطلب الآن، سلتك محفوظة يمكنك المحاولة مجدداً",
+          "error"
+        );
+        return;
+      }
 
-    window.open(url, "_blank", "noopener,noreferrer");
-    toast("تم تجهيز الفاتورة وفتح التطبيق للإرسال!", "success");
+      const externalUrl =
+        channel === "whatsapp"
+          ? buildWhatsAppUrl(tenant.whatsapp || tenant.phone, payload.invoiceMessage)
+          : buildSmsUrl(tenant.phone, payload.invoiceMessage);
+
+      // Save temporary backup for restore option before clearing cart
+      const backup: StoredLastOrder = {
+        savedAt: Date.now(),
+        lines: cart.map((c) => ({ id: c.item.id, quantity: c.quantity })),
+      };
+      try {
+        localStorage.setItem(
+          `menuz-last-order-${tenant.slug}`,
+          JSON.stringify(backup)
+        );
+      } catch {
+        // ignore
+      }
+      setRestorableOrder(backup);
+
+      // Clear cart ONLY after confirmed server success
+      setCart([]);
+      setCartOpen(false);
+      setInvoiceStep(false);
+      setIdempotencyKey(makeIdempotencyKey());
+
+      setCompletedOrder({
+        orderId: payload.orderId ?? null,
+        orderNumber: payload.orderNumber,
+        feedbackToken: payload.feedbackToken,
+        items: payload.itemsSnapshot,
+        computedTotal: payload.computedTotal,
+        currency: payload.currency || tenant.currency || "ر.ي",
+        externalUrl,
+        channel,
+      });
+
+      window.open(externalUrl, "_blank", "noopener,noreferrer");
+    } catch {
+      toast("تعذر الاتصال بالخادم، سلتك لا تزال محفوظة", "error");
+    } finally {
+      setSubmittingOrder(false);
+    }
   };
 
   // SUSPENDED TENANT SCREEN
   if (!tenant.is_active) {
     return (
-      <main className="min-h-screen flex items-center justify-center p-6 menuz-grid-bg">
-        <div className="max-w-md w-full rounded-3xl p-8 text-center space-y-6 glass-panel">
+      <main
+        className="min-h-screen flex items-center justify-center p-6"
+        style={{ backgroundColor: themeColors.background, color: themeColors.text }}
+      >
+        <div
+          className="max-w-md w-full rounded-3xl p-8 text-center space-y-6 border shadow-2xl"
+          style={{
+            backgroundColor: themeColors.card,
+            borderColor: themeColors.border,
+          }}
+        >
           <div className="flex items-center justify-between">
             <MenuzLogo height={36} />
             <button
               type="button"
               onClick={toggleTheme}
-              className="p-2 rounded-xl border border-navy-700/15 dark:border-white/15"
+              className="p-2 rounded-xl border"
+              style={{ borderColor: themeColors.border }}
               aria-label="تبديل المظهر"
             >
               {theme === "dark" ? (
-                <Sun className="w-4 h-4 text-brand-amber" />
+                <Sun className="w-4 h-4" style={{ color: themeColors.accent }} />
               ) : (
                 <Moon className="w-4 h-4" />
               )}
@@ -519,7 +931,10 @@ export function PublicMenuClient({
           </div>
 
           {tenant.logo_url && (
-            <div className="w-24 h-24 mx-auto rounded-full overflow-hidden border-2 border-brand-orange/40 shadow-xl">
+            <div
+              className="w-24 h-24 mx-auto rounded-full overflow-hidden border-2 shadow-xl"
+              style={{ borderColor: themeColors.accent }}
+            >
               <Image
                 src={tenant.logo_url}
                 alt={tenant.name_ar}
@@ -536,7 +951,7 @@ export function PublicMenuClient({
               <span>المنيو متوقف مؤقتاً</span>
             </div>
             <h1 className="text-2xl font-black">{tenant.name_ar}</h1>
-            <p className="text-sm leading-relaxed text-navy-600 dark:text-slate-300">
+            <p className="text-sm leading-relaxed" style={{ color: themeColors.mutedText }}>
               {tenant.suspended_message}
             </p>
           </div>
@@ -544,7 +959,11 @@ export function PublicMenuClient({
           {tenant.phone && (
             <a
               href={`tel:${tenant.phone}`}
-              className="inline-flex items-center gap-2 rounded-xl px-5 py-3 text-sm font-bold bg-orange-gradient text-white shadow-orange-glow"
+              className="inline-flex items-center gap-2 rounded-xl px-5 py-3 text-sm font-bold shadow-lg"
+              style={{
+                backgroundColor: themeColors.accent,
+                color: themeColors.buttonText,
+              }}
             >
               <Phone className="w-4 h-4" />
               <span>تواصل مع المطعم: {tenant.phone}</span>
@@ -554,7 +973,8 @@ export function PublicMenuClient({
           <div className="pt-2">
             <Link
               href="/"
-              className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-orange hover:underline"
+              className="inline-flex items-center gap-1.5 text-xs font-bold hover:underline"
+              style={{ color: themeColors.accent }}
             >
               <Home className="w-3.5 h-3.5" />
               <span>الصفحة الرئيسية العامة</span>
@@ -566,61 +986,134 @@ export function PublicMenuClient({
   }
 
   return (
-    <div className="min-h-screen flex flex-col pb-28">
-      {/* CSS-ONLY <=1s LUXURY WELCOME SPLASH (never blocks content) */}
-      {showSplash && (
-        <div
-          aria-hidden="true"
-          className="fixed inset-0 z-[90] bg-gradient-to-br from-[#0B2D5B] via-[#061835] to-[#040E21] flex flex-col items-center justify-center gap-5 px-6 animate-menuz-splash"
-        >
-          <div className="flex items-center gap-4">
-            <MenuzLogo forceTheme="dark" height={54} />
-          </div>
-          <div className="text-center space-y-1 text-white">
-            <p className="text-xs tracking-widest text-brand-amber font-bold">
-              أهلاً بكم في
-            </p>
-            <p className="font-display text-2xl font-black">{tenant.name_ar}</p>
-          </div>
-          <div className="w-44 h-1 rounded-full bg-white/15 overflow-hidden">
-            <div className="h-full bg-orange-gradient animate-menuz-splash-bar" />
+    <div
+      className="min-h-screen flex flex-col pb-28 transition-colors duration-300"
+      style={{
+        backgroundColor: themeColors.background,
+        color: themeColors.text,
+      }}
+    >
+      {/* SKIPPABLE ELEGANT WELCOME TRANSITION (~3.2s once per session, non-blocking) */}
+      <AnimatePresence>
+        {showSplash && (
+          <motion.div
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.35 }}
+            className="fixed inset-0 z-[90] flex flex-col items-center justify-center gap-5 px-6"
+            style={{
+              background: `linear-gradient(135deg, ${themeColors.primary} 0%, ${themeColors.background} 100%)`,
+              color: themeColors.primaryButtonText,
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setShowSplash(false)}
+              className="absolute top-5 left-5 px-3.5 py-1.5 rounded-full text-xs font-bold bg-white/15 hover:bg-white/25 text-white backdrop-blur-md transition"
+            >
+              تخطي ✕
+            </button>
+
+            {tenant.logo_url && (
+              <div
+                className="w-20 h-20 rounded-3xl overflow-hidden border-2 shadow-2xl"
+                style={{ borderColor: themeColors.accent }}
+              >
+                <Image
+                  src={tenant.logo_url}
+                  alt={tenant.name_ar}
+                  width={80}
+                  height={80}
+                  className="w-full h-full object-cover"
+                />
+              </div>
+            )}
+
+            <MenuzLogo forceTheme="dark" height={44} />
+
+            <div className="text-center space-y-1">
+              <p className="text-xs tracking-widest font-bold" style={{ color: themeColors.accent }}>
+                أهلاً بكم في
+              </p>
+              <p className="font-display text-2xl font-black text-white">
+                {tenant.name_ar}
+              </p>
+              <p className="text-xs text-white/75">
+                امسح.. اطلب.. واستمتع
+              </p>
+            </div>
+
+            <div className="w-44 h-1 rounded-full bg-white/15 overflow-hidden">
+              <motion.div
+                initial={{ width: "10%" }}
+                animate={{ width: "100%" }}
+                transition={{ duration: 3, ease: "easeOut" }}
+                className="h-full"
+                style={{ backgroundColor: themeColors.accent }}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* OFFLINE STATUS BANNER */}
+      {isOffline && (
+        <div className="bg-amber-600 text-white py-2 px-4 text-xs font-bold">
+          <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <WifiOff className="w-4 h-4 shrink-0" />
+              <span>
+                أنت تتصفح نسخة محفوظة دون اتصال — قد لا تعكس الأسعار أو التوفر أحدث تعديل.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-black/25 hover:bg-black/40"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>تحديث</span>
+            </button>
           </div>
         </div>
       )}
 
       {/* DEMO MENU BANNER */}
       {tenant.is_demo && (
-        <div className="bg-navy-900 text-white border-b border-brand-orange/40 py-2 px-4">
+        <div
+          className="text-white border-b py-2 px-4"
+          style={{
+            backgroundColor: themeColors.primary,
+            borderColor: themeColors.border,
+          }}
+        >
           <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2 font-bold text-brand-amber">
-              <FlaskConical className="w-4 h-4 shrink-0" />
-              <span>
-                منيو تجريبي تفاعلي (Demo) — بيانات نموذجية لاستعراض منصة مينوز
-                v3.0
-              </span>
+            <div className="flex items-center gap-2 font-bold">
+              <FlaskConical className="w-4 h-4 shrink-0" style={{ color: themeColors.accent }} />
+              <span>منيو تجريبي تفاعلي (Demo) — استكشف تجربة منصة مينوز</span>
             </div>
             <Link
               href="/contact"
-              className="px-3 py-1 rounded-lg bg-orange-gradient text-white font-extrabold hover:brightness-110 transition"
+              className="px-3 py-1 rounded-lg font-extrabold transition hover:brightness-110"
+              style={{
+                backgroundColor: themeColors.accent,
+                color: themeColors.buttonText,
+              }}
             >
-              أنشئ منيو مطعمك مجاناً لمدة شهر
+              احصل على منيو مطعمك مجاناً لمدة شهر
             </Link>
           </div>
         </div>
       )}
 
       {/* HERO / COVER HEADER */}
-      <header className="relative overflow-hidden border-b border-navy-700/10 dark:border-white/10">
+      <header className="relative overflow-hidden border-b" style={{ borderColor: themeColors.border }}>
         <div
           className="absolute inset-0"
           style={{
             background: tenant.cover_url
               ? undefined
-              : `radial-gradient(circle at top right, ${
-                  tenant.accent_color || "#FF7A00"
-                }33, transparent 55%), linear-gradient(135deg, ${
-                  tenant.primary_color || "#0B2D5B"
-                } 0%, #040E21 100%)`,
+              : `radial-gradient(circle at top right, ${themeColors.accent}36, transparent 58%), linear-gradient(135deg, ${themeColors.primary} 0%, ${themeColors.background} 100%)`,
           }}
         >
           {tenant.cover_url && (
@@ -632,12 +1125,12 @@ export function PublicMenuClient({
                 priority
                 className="object-cover"
               />
-              <div className="absolute inset-0 bg-gradient-to-t from-[#040E21] via-[#040E21]/75 to-[#040E21]/40" />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/60 to-black/35" />
             </>
           )}
         </div>
 
-        <div className="relative max-w-5xl mx-auto px-4 sm:px-6 pt-5 pb-8 text-white space-y-6">
+        <div className="relative max-w-5xl mx-auto px-4 sm:px-6 pt-5 pb-8 text-white space-y-5">
           {/* Top Bar */}
           <div className="flex items-center justify-between gap-3">
             <Link
@@ -648,7 +1141,7 @@ export function PublicMenuClient({
             </Link>
 
             <div className="flex items-center gap-2">
-              {/* In-App Notifications Bell */}
+              {/* In-App Notifications Bell + Push Opt-in */}
               <div className="relative">
                 <button
                   type="button"
@@ -660,9 +1153,15 @@ export function PublicMenuClient({
                   aria-label="الإشعارات"
                   title="الإشعارات"
                 >
-                  <Bell className="w-4 h-4 text-brand-amber" />
+                  <Bell className="w-4 h-4" style={{ color: themeColors.accent }} />
                   {unreadCount > 0 && (
-                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-brand-orange text-[10px] font-black text-white flex items-center justify-center shadow">
+                    <span
+                      className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-black flex items-center justify-center shadow"
+                      style={{
+                        backgroundColor: themeColors.accent,
+                        color: themeColors.buttonText,
+                      }}
+                    >
                       {unreadCount}
                     </span>
                   )}
@@ -674,24 +1173,52 @@ export function PublicMenuClient({
                       initial={{ opacity: 0, y: 8, scale: 0.96 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: 8, scale: 0.96 }}
-                      className="absolute left-0 mt-2 w-80 max-w-[85vw] rounded-2xl p-4 bg-[#071A38] border border-white/15 text-white shadow-2xl z-50 space-y-3"
+                      className="absolute left-0 mt-2 w-80 max-w-[85vw] rounded-2xl p-4 border shadow-2xl z-50 space-y-3"
+                      style={{
+                        backgroundColor: themeColors.card,
+                        color: themeColors.text,
+                        borderColor: themeColors.border,
+                      }}
                     >
-                      <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                        <span className="font-extrabold text-xs text-brand-amber flex items-center gap-1.5">
+                      <div className="flex items-center justify-between border-b pb-2" style={{ borderColor: themeColors.border }}>
+                        <span className="font-extrabold text-xs flex items-center gap-1.5" style={{ color: themeColors.accent }}>
                           <Bell className="w-3.5 h-3.5" />
                           <span>إشعارات {tenant.name_ar}</span>
                         </span>
                         <button
                           type="button"
                           onClick={() => setNotifOpen(false)}
-                          className="p-1 rounded-lg hover:bg-white/10"
+                          className="p-1 rounded-lg hover:bg-black/10 dark:hover:bg-white/10"
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
                       </div>
 
+                      {pushSupported && (
+                        <button
+                          type="button"
+                          disabled={subscribingPush}
+                          onClick={handleToggleWebPush}
+                          className="w-full rounded-xl py-2 px-3 text-xs font-bold flex items-center justify-center gap-1.5 border transition"
+                          style={{
+                            borderColor: themeColors.accent,
+                            backgroundColor: pushSubscribed
+                              ? themeColors.accentSoft
+                              : "transparent",
+                            color: themeColors.accent,
+                          }}
+                        >
+                          <BellRing className="w-3.5 h-3.5" />
+                          <span>
+                            {pushSubscribed
+                              ? "إشعارات العروض مفعّلة (إلغاء)"
+                              : "اشترك لتنبيهات العروض"}
+                          </span>
+                        </button>
+                      )}
+
                       {notifications.length === 0 ? (
-                        <p className="text-xs text-slate-300 text-center py-4">
+                        <p className="text-xs text-center py-4" style={{ color: themeColors.mutedText }}>
                           لا توجد إشعارات حالياً.
                         </p>
                       ) : (
@@ -699,15 +1226,17 @@ export function PublicMenuClient({
                           {notifications.map((n) => (
                             <div
                               key={n.id}
-                              className="rounded-xl p-3 bg-white/5 border border-white/10 space-y-1"
+                              className="rounded-xl p-3 border space-y-1"
+                              style={{
+                                backgroundColor: themeColors.surface,
+                                borderColor: themeColors.border,
+                              }}
                             >
-                              <p className="font-bold text-xs text-brand-amber">
+                              <p className="font-bold text-xs" style={{ color: themeColors.accent }}>
                                 {n.title}
                               </p>
-                              <p className="text-xs text-slate-200 leading-relaxed">
-                                {n.body}
-                              </p>
-                              <p className="text-[10px] text-slate-400">
+                              <p className="text-xs leading-relaxed">{n.body}</p>
+                              <p className="text-[10px]" style={{ color: themeColors.mutedText }}>
                                 {formatArabicDate(n.created_at)}
                               </p>
                             </div>
@@ -732,7 +1261,7 @@ export function PublicMenuClient({
                 aria-label="تبديل الوضع الليلي"
               >
                 {theme === "dark" ? (
-                  <Sun className="w-4 h-4 text-brand-amber" />
+                  <Sun className="w-4 h-4" style={{ color: themeColors.accent }} />
                 ) : (
                   <Moon className="w-4 h-4 text-white" />
                 )}
@@ -742,7 +1271,13 @@ export function PublicMenuClient({
 
           {/* Tenant Identity */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-5">
-            <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-3xl overflow-hidden border-2 border-brand-orange/60 bg-[#040E21] shadow-2xl shrink-0">
+            <div
+              className="w-24 h-24 sm:w-28 sm:h-28 rounded-3xl overflow-hidden border-2 shadow-2xl shrink-0"
+              style={{
+                borderColor: themeColors.accent,
+                backgroundColor: themeColors.primary,
+              }}
+            >
               {tenant.logo_url ? (
                 <Image
                   src={tenant.logo_url}
@@ -753,7 +1288,10 @@ export function PublicMenuClient({
                   className="w-full h-full object-cover"
                 />
               ) : (
-                <div className="w-full h-full flex items-center justify-center text-3xl font-black text-brand-orange">
+                <div
+                  className="w-full h-full flex items-center justify-center text-3xl font-black"
+                  style={{ color: themeColors.accent }}
+                >
                   {tenant.name_ar.slice(0, 1)}
                 </div>
               )}
@@ -761,11 +1299,14 @@ export function PublicMenuClient({
 
             <div className="flex-1 space-y-2.5">
               <div className="flex flex-wrap items-center gap-2.5">
-                <h1 className="font-display text-3xl sm:text-4xl font-black">
+                <h1 className="font-display text-3xl sm:text-4xl font-black text-white">
                   {tenant.name_ar}
                 </h1>
                 {tenant.name_en && (
-                  <span className="px-3 py-1 rounded-full text-xs font-bold tracking-wider bg-white/10 border border-white/15 text-brand-amber">
+                  <span
+                    className="px-3 py-1 rounded-full text-xs font-bold tracking-wider bg-white/10 border border-white/15"
+                    style={{ color: themeColors.accent }}
+                  >
                     {tenant.name_en}
                   </span>
                 )}
@@ -777,10 +1318,10 @@ export function PublicMenuClient({
                 </p>
               )}
 
-              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-200 pt-1">
+              <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-200 pt-1">
                 {tenant.address && (
                   <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 border border-white/10">
-                    <MapPin className="w-3.5 h-3.5 text-brand-orange" />
+                    <MapPin className="w-3.5 h-3.5" style={{ color: themeColors.accent }} />
                     <span>{tenant.address}</span>
                   </span>
                 )}
@@ -794,7 +1335,12 @@ export function PublicMenuClient({
                   <button
                     type="button"
                     onClick={() => setStoryOpen((v) => !v)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-brand-orange/25 border border-brand-orange/40 text-brand-amber font-bold hover:bg-brand-orange/35 transition"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border font-bold transition"
+                    style={{
+                      backgroundColor: themeColors.accentSoft,
+                      borderColor: themeColors.accent,
+                      color: "#FFFFFF",
+                    }}
                   >
                     <Sparkles className="w-3.5 h-3.5" />
                     <span>قصتنا</span>
@@ -805,6 +1351,15 @@ export function PublicMenuClient({
                     )}
                   </button>
                 )}
+              </div>
+
+              {/* TOP SOCIAL ICONS BAR */}
+              <div className="pt-1">
+                <TenantSocialIcons
+                  tenant={tenant}
+                  themeColors={themeColors}
+                  inHeader
+                />
               </div>
             </div>
           </div>
@@ -828,24 +1383,31 @@ export function PublicMenuClient({
 
       {/* ANIMATED OFFERS MARQUEE */}
       {activeOffers.length > 0 && (
-        <div className="bg-orange-gradient text-white py-2.5 overflow-hidden border-b border-white/15 shadow-lg">
+        <div
+          className="py-2.5 overflow-hidden border-b shadow-md"
+          style={{
+            backgroundColor: themeColors.accent,
+            color: themeColors.buttonText,
+            borderColor: themeColors.border,
+          }}
+        >
           <div className="flex w-max animate-marquee-rtl gap-10 px-4">
             {[...activeOffers, ...activeOffers].map((offer, i) => (
               <div
                 key={`${offer.id}-${i}`}
                 className="inline-flex items-center gap-2.5 text-sm font-bold shrink-0"
               >
-                <span className="px-2.5 py-0.5 rounded-full bg-navy-900/40 text-xs">
+                <span className="px-2.5 py-0.5 rounded-full bg-black/25 text-white text-xs">
                   {offer.badge_text}
                 </span>
                 <span>{offer.title}</span>
                 {offer.discount_text && (
-                  <span className="px-2 py-0.5 rounded-md bg-white text-brand-ember text-xs font-black">
+                  <span className="px-2 py-0.5 rounded-md bg-white text-slate-900 text-xs font-black">
                     {offer.discount_text}
                   </span>
                 )}
                 {offer.description && (
-                  <span className="text-white/90 font-normal text-xs">
+                  <span className="opacity-90 font-normal text-xs">
                     — {offer.description}
                   </span>
                 )}
@@ -855,28 +1417,52 @@ export function PublicMenuClient({
         </div>
       )}
 
-      {/* FEATURED CAROUSEL */}
+      {/* FIRST-VISIT PWA ONBOARDING HINT */}
+      <PwaOnboardingHint
+        slug={tenant.slug}
+        appTitle={tenant.name_ar}
+        accentColor={themeColors.accent}
+        buttonTextColor={themeColors.buttonText}
+      />
+
+      {/* FEATURED CAROUSEL (Smooth Auto-Scroll, pauses on interaction / reduced-motion) */}
       {featuredItems.length > 0 && (
         <section className="max-w-5xl w-full mx-auto px-4 sm:px-6 pt-7">
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-display text-lg sm:text-xl font-black flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-brand-orange" />
+              <Sparkles className="w-5 h-5" style={{ color: themeColors.accent }} />
               <span>الأصناف المميزة</span>
             </h2>
+            {featuredItems.length > 1 && !reducedMotion && (
+              <span className="text-[11px] font-semibold" style={{ color: themeColors.mutedText }}>
+                {featuredPaused ? "تم إيقاف التمرير" : "يتحرك تلقائياً"}
+              </span>
+            )}
           </div>
 
-          <div className="flex gap-4 overflow-x-auto no-scrollbar pb-2 snap-x">
+          <div
+            ref={featuredStripRef}
+            onMouseEnter={() => setFeaturedPaused(true)}
+            onMouseLeave={() => setFeaturedPaused(false)}
+            onTouchStart={() => setFeaturedPaused(true)}
+            onFocus={() => setFeaturedPaused(true)}
+            className="flex gap-4 overflow-x-auto no-scrollbar pb-2 snap-x"
+          >
             {featuredItems.map((item) => {
               const qty = getQty(item.id);
               return (
-                <motion.div
+                <div
                   key={item.id}
-                  whileHover={{ y: -3 }}
-                  className="snap-start shrink-0 w-64 rounded-2xl overflow-hidden glass-card border border-brand-orange/25 flex flex-col"
+                  className="snap-start shrink-0 w-56 rounded-2xl overflow-hidden border flex flex-col shadow-sm transition hover:-translate-y-0.5"
+                  style={{
+                    backgroundColor: themeColors.card,
+                    borderColor: themeColors.border,
+                  }}
                 >
+                  {/* Square Product Card Image */}
                   <div
                     onClick={() => openItemDetail(item)}
-                    className="h-32 w-full relative cursor-pointer"
+                    className="aspect-square w-full relative cursor-pointer"
                   >
                     {item.image_url ? (
                       <Image
@@ -887,9 +1473,15 @@ export function PublicMenuClient({
                         className="object-cover"
                       />
                     ) : (
-                      <DishArtFallback name={item.name} />
+                      <DishArtFallback name={item.name} themeColors={themeColors} />
                     )}
-                    <span className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-navy-900/80 text-brand-amber backdrop-blur-md">
+                    <span
+                      className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-full text-[11px] font-bold backdrop-blur-md"
+                      style={{
+                        backgroundColor: themeColors.primary,
+                        color: themeColors.primaryButtonText,
+                      }}
+                    >
                       ⭐ مميز
                     </span>
                   </div>
@@ -902,32 +1494,49 @@ export function PublicMenuClient({
                       <h3 className="font-extrabold text-sm line-clamp-1">
                         {item.name}
                       </h3>
-                      {item.ingredients && (
-                        <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-1 mt-0.5">
-                          {item.ingredients}
+                      {(item.ingredients || item.description) && (
+                        <p
+                          className="text-xs line-clamp-1 mt-0.5"
+                          style={{ color: themeColors.mutedText }}
+                        >
+                          {item.ingredients || item.description}
                         </p>
                       )}
                     </div>
 
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-black text-brand-orange text-sm">
+                      <span
+                        className="font-black text-sm"
+                        style={{ color: themeColors.accent }}
+                      >
                         {formatPrice(item.price, tenant.currency)}
                       </span>
                       {qty === 0 ? (
                         <button
                           type="button"
                           onClick={() => addToCart(item)}
-                          className="inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold bg-orange-gradient text-white shadow-orange-glow hover:brightness-110 transition"
+                          className="inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold transition hover:brightness-110"
+                          style={{
+                            backgroundColor: themeColors.accent,
+                            color: themeColors.buttonText,
+                          }}
                         >
                           <Plus className="w-3.5 h-3.5" />
                           <span>أضف</span>
                         </button>
                       ) : (
-                        <div className="inline-flex items-center gap-2 rounded-xl px-2 py-1 bg-brand-orange/15 border border-brand-orange/30">
+                        <div
+                          className="inline-flex items-center gap-2 rounded-xl px-2 py-1 border"
+                          style={{
+                            backgroundColor: themeColors.accentSoft,
+                            borderColor: themeColors.accent,
+                          }}
+                        >
                           <button
                             type="button"
                             onClick={() => updateQty(item.id, -1)}
-                            className="p-0.5 text-brand-orange"
+                            className="p-0.5"
+                            style={{ color: themeColors.accent }}
                           >
                             <Minus className="w-3.5 h-3.5" />
                           </button>
@@ -937,7 +1546,8 @@ export function PublicMenuClient({
                           <button
                             type="button"
                             onClick={() => updateQty(item.id, 1)}
-                            className="p-0.5 text-brand-orange"
+                            className="p-0.5"
+                            style={{ color: themeColors.accent }}
                           >
                             <Plus className="w-3.5 h-3.5" />
                           </button>
@@ -945,7 +1555,7 @@ export function PublicMenuClient({
                       )}
                     </div>
                   </div>
-                </motion.div>
+                </div>
               );
             })}
           </div>
@@ -953,7 +1563,13 @@ export function PublicMenuClient({
       )}
 
       {/* STICKY CATEGORIES + SEARCH + VIEW MODE SWITCHER */}
-      <div className="sticky top-0 z-30 mt-5 bg-white/85 dark:bg-[#040E21]/85 backdrop-blur-xl border-y border-navy-700/10 dark:border-white/10">
+      <div
+        className="sticky top-0 z-30 mt-5 backdrop-blur-xl border-y"
+        style={{
+          backgroundColor: `${themeColors.background}EB`,
+          borderColor: themeColors.border,
+        }}
+      >
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3 space-y-3">
           {/* Categories Strip + View Switcher */}
           <div className="flex items-center justify-between gap-3">
@@ -966,12 +1582,20 @@ export function PublicMenuClient({
                       key={cat.id}
                       type="button"
                       onClick={() => scrollToCategory(cat.id)}
-                      className={cn(
-                        "shrink-0 px-4 py-2 rounded-full text-xs sm:text-sm font-bold transition-all",
+                      className="shrink-0 px-4 py-2 rounded-full text-xs sm:text-sm font-bold transition-all border"
+                      style={
                         active
-                          ? "bg-orange-gradient text-white shadow-orange-glow"
-                          : "bg-slate-100 dark:bg-navy-800/80 text-navy-700 dark:text-slate-300 hover:border-brand-orange/50 border border-transparent"
-                      )}
+                          ? {
+                              backgroundColor: themeColors.accent,
+                              color: themeColors.buttonText,
+                              borderColor: themeColors.accent,
+                            }
+                          : {
+                              backgroundColor: themeColors.card,
+                              color: themeColors.text,
+                              borderColor: themeColors.border,
+                            }
+                      }
                     >
                       {cat.name}
                     </button>
@@ -982,9 +1606,13 @@ export function PublicMenuClient({
               <div className="flex-1" />
             )}
 
-            {/* View Mode Switcher: Cards / List / Classic */}
+            {/* View Mode Switcher */}
             <div
-              className="shrink-0 inline-flex items-center gap-1 rounded-xl p-1 bg-slate-100 dark:bg-navy-800/80 border border-navy-700/10 dark:border-white/10"
+              className="shrink-0 inline-flex items-center gap-1 rounded-xl p-1 border"
+              style={{
+                backgroundColor: themeColors.card,
+                borderColor: themeColors.border,
+              }}
               role="group"
               aria-label="تبديل طريقة العرض"
             >
@@ -1000,12 +1628,15 @@ export function PublicMenuClient({
                   type="button"
                   onClick={() => changeViewMode(m.key)}
                   title={m.label}
-                  className={cn(
-                    "inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition",
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition"
+                  style={
                     viewMode === m.key
-                      ? "bg-orange-gradient text-white shadow-sm"
-                      : "text-slate-500 dark:text-slate-300 hover:text-brand-orange"
-                  )}
+                      ? {
+                          backgroundColor: themeColors.accent,
+                          color: themeColors.buttonText,
+                        }
+                      : { color: themeColors.mutedText }
+                  }
                 >
                   <m.icon className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">{m.label}</span>
@@ -1017,12 +1648,20 @@ export function PublicMenuClient({
           {/* Search & Badge Filter */}
           <div className="flex flex-col sm:flex-row gap-2.5">
             <div className="relative flex-1">
-              <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+              <Search
+                className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2"
+                style={{ color: themeColors.mutedText }}
+              />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="ابحث عن صنف أو مكوّن..."
-                className="w-full rounded-xl pr-10 pl-4 py-2.5 text-sm bg-slate-100/90 dark:bg-navy-800/80 border border-navy-700/10 dark:border-white/10 focus:outline-none focus:border-brand-orange"
+                className="w-full rounded-xl pr-10 pl-4 py-2.5 text-sm border focus:outline-none"
+                style={{
+                  backgroundColor: themeColors.card,
+                  borderColor: themeColors.border,
+                  color: themeColors.text,
+                }}
               />
             </div>
 
@@ -1034,25 +1673,65 @@ export function PublicMenuClient({
                   { key: "new", label: "🆕 جديد" },
                   { key: "limited_offer", label: "⏰ عرض محدود" },
                 ] as const
-              ).map((chip) => (
-                <button
-                  key={chip.key}
-                  type="button"
-                  onClick={() => setBadgeFilter(chip.key)}
-                  className={cn(
-                    "shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition",
-                    badgeFilter === chip.key
-                      ? "bg-brand-orange/20 border-brand-orange text-brand-orange"
-                      : "bg-slate-100/80 dark:bg-navy-800/60 border-navy-700/10 dark:border-white/10 text-slate-500 dark:text-slate-300"
-                  )}
-                >
-                  {chip.label}
-                </button>
-              ))}
+              ).map((chip) => {
+                const active = badgeFilter === chip.key;
+                return (
+                  <button
+                    key={chip.key}
+                    type="button"
+                    onClick={() => setBadgeFilter(chip.key)}
+                    className="shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition"
+                    style={
+                      active
+                        ? {
+                            backgroundColor: themeColors.accentSoft,
+                            borderColor: themeColors.accent,
+                            color: themeColors.accent,
+                          }
+                        : {
+                            backgroundColor: themeColors.card,
+                            borderColor: themeColors.border,
+                            color: themeColors.mutedText,
+                          }
+                    }
+                  >
+                    {chip.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
       </div>
+
+      {/* RESTORE LAST ORDER BANNER (when cart is empty & recent order exists) */}
+      {cart.length === 0 && restorableOrder && (
+        <div className="max-w-5xl w-full mx-auto px-4 sm:px-6 pt-5">
+          <div
+            className="rounded-2xl p-3.5 border flex items-center justify-between gap-3"
+            style={{
+              backgroundColor: themeColors.card,
+              borderColor: themeColors.border,
+            }}
+          >
+            <span className="text-xs font-bold">
+              هل ترغب في إعادة طلب أصناف طلبك السابق؟
+            </span>
+            <button
+              type="button"
+              onClick={restoreLastOrder}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-extrabold transition"
+              style={{
+                backgroundColor: themeColors.accentSoft,
+                color: themeColors.accent,
+              }}
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>استعادة الطلب السابق</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* MENU CATEGORIES & ITEMS */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-8 space-y-10">
@@ -1075,23 +1754,32 @@ export function PublicMenuClient({
                 id={`cat-${cat.id}`}
                 className="scroll-mt-36 space-y-4"
               >
-                <div className="flex items-baseline justify-between border-b border-navy-700/10 dark:border-white/10 pb-2.5">
+                <div
+                  className="flex items-baseline justify-between border-b pb-2.5"
+                  style={{ borderColor: themeColors.border }}
+                >
                   <div>
                     <h2 className="font-display text-2xl font-black">
                       {cat.name}
                     </h2>
                     {cat.description && (
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                      <p className="text-xs mt-0.5" style={{ color: themeColors.mutedText }}>
                         {cat.description}
                       </p>
                     )}
                   </div>
-                  <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-brand-orange/15 text-brand-orange">
+                  <span
+                    className="text-xs font-bold px-2.5 py-1 rounded-full"
+                    style={{
+                      backgroundColor: themeColors.accentSoft,
+                      color: themeColors.accent,
+                    }}
+                  >
                     {catItems.length} أصناف
                   </span>
                 </div>
 
-                {/* VIEW MODE: CARDS (Default) */}
+                {/* VIEW MODE: ELEGANT SQUARE CARDS */}
                 {viewMode === "cards" && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {catItems.map((item) => {
@@ -1101,22 +1789,20 @@ export function PublicMenuClient({
                       const qty = getQty(item.id);
 
                       return (
-                        <motion.div
+                        <div
                           key={item.id}
-                          initial={{ opacity: 0, y: 12 }}
-                          whileInView={{ opacity: 1, y: 0 }}
-                          viewport={{ once: true, margin: "-30px" }}
-                          transition={{ duration: 0.25 }}
                           className={cn(
-                            "group rounded-2xl p-3.5 glass-card flex gap-3.5 items-stretch",
-                            unavailable
-                              ? "opacity-65 grayscale-[40%]"
-                              : "hover:border-brand-orange/45"
+                            "group rounded-2xl p-3.5 border flex gap-3.5 items-stretch shadow-sm transition",
+                            unavailable && "opacity-65 grayscale-[40%]"
                           )}
+                          style={{
+                            backgroundColor: themeColors.card,
+                            borderColor: themeColors.border,
+                          }}
                         >
                           <div
                             onClick={() => openItemDetail(item)}
-                            className="w-24 h-24 sm:w-28 sm:h-28 rounded-xl overflow-hidden shrink-0 relative cursor-pointer"
+                            className="w-28 h-28 sm:w-32 sm:h-32 rounded-2xl overflow-hidden shrink-0 relative cursor-pointer"
                           >
                             {item.image_url ? (
                               <Image
@@ -1127,7 +1813,7 @@ export function PublicMenuClient({
                                 className="object-cover group-hover:scale-105 transition-transform duration-300"
                               />
                             ) : (
-                              <DishArtFallback name={item.name} />
+                              <DishArtFallback name={item.name} themeColors={themeColors} />
                             )}
                           </div>
 
@@ -1162,7 +1848,10 @@ export function PublicMenuClient({
                               </h3>
 
                               {(item.ingredients || item.description) && (
-                                <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">
+                                <p
+                                  className="text-xs line-clamp-2 leading-relaxed"
+                                  style={{ color: themeColors.mutedText }}
+                                >
                                   {item.ingredients || item.description}
                                 </p>
                               )}
@@ -1170,12 +1859,15 @@ export function PublicMenuClient({
 
                             <div className="flex items-center justify-between gap-2 pt-1">
                               <div className="flex items-baseline gap-2">
-                                <span className="font-black text-base text-brand-orange">
+                                <span
+                                  className="font-black text-base"
+                                  style={{ color: themeColors.accent }}
+                                >
                                   {formatPrice(item.price, tenant.currency)}
                                 </span>
                                 {item.original_price &&
                                   item.original_price > item.price && (
-                                    <span className="text-xs line-through text-slate-400">
+                                    <span className="text-xs line-through opacity-55">
                                       {formatPrice(
                                         item.original_price,
                                         tenant.currency
@@ -1189,17 +1881,28 @@ export function PublicMenuClient({
                                   <button
                                     type="button"
                                     onClick={() => addToCart(item)}
-                                    className="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold bg-orange-gradient text-white shadow-orange-glow hover:brightness-110 transition"
+                                    className="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition hover:brightness-110"
+                                    style={{
+                                      backgroundColor: themeColors.accent,
+                                      color: themeColors.buttonText,
+                                    }}
                                   >
                                     <Plus className="w-3.5 h-3.5" />
-                                    <span>أضف للسلة</span>
+                                    <span>أضف</span>
                                   </button>
                                 ) : (
-                                  <div className="inline-flex items-center gap-2.5 rounded-xl px-2.5 py-1.5 bg-brand-orange/15 border border-brand-orange/35">
+                                  <div
+                                    className="inline-flex items-center gap-2.5 rounded-xl px-2.5 py-1.5 border"
+                                    style={{
+                                      backgroundColor: themeColors.accentSoft,
+                                      borderColor: themeColors.accent,
+                                    }}
+                                  >
                                     <button
                                       type="button"
                                       onClick={() => updateQty(item.id, -1)}
-                                      className="p-0.5 text-brand-orange hover:scale-110 transition"
+                                      className="p-0.5"
+                                      style={{ color: themeColors.accent }}
                                       aria-label="إنقاص الكمية"
                                     >
                                       <Minus className="w-4 h-4" />
@@ -1210,7 +1913,8 @@ export function PublicMenuClient({
                                     <button
                                       type="button"
                                       onClick={() => updateQty(item.id, 1)}
-                                      className="p-0.5 text-brand-orange hover:scale-110 transition"
+                                      className="p-0.5"
+                                      style={{ color: themeColors.accent }}
                                       aria-label="زيادة الكمية"
                                     >
                                       <Plus className="w-4 h-4" />
@@ -1219,7 +1923,7 @@ export function PublicMenuClient({
                                 ))}
                             </div>
                           </div>
-                        </motion.div>
+                        </div>
                       );
                     })}
                   </div>
@@ -1237,9 +1941,13 @@ export function PublicMenuClient({
                         <div
                           key={item.id}
                           className={cn(
-                            "rounded-2xl p-3 glass-card flex items-center justify-between gap-3",
+                            "rounded-2xl p-3 border flex items-center justify-between gap-3",
                             unavailable && "opacity-60"
                           )}
+                          style={{
+                            backgroundColor: themeColors.card,
+                            borderColor: themeColors.border,
+                          }}
                         >
                           <div
                             onClick={() => openItemDetail(item)}
@@ -1255,7 +1963,11 @@ export function PublicMenuClient({
                                   className="object-cover"
                                 />
                               ) : (
-                                <DishArtFallback name={item.name} compact />
+                                <DishArtFallback
+                                  name={item.name}
+                                  themeColors={themeColors}
+                                  compact
+                                />
                               )}
                             </div>
                             <div className="min-w-0">
@@ -1263,7 +1975,10 @@ export function PublicMenuClient({
                                 {item.name}
                               </h3>
                               {(item.ingredients || item.description) && (
-                                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                                <p
+                                  className="text-xs truncate"
+                                  style={{ color: themeColors.mutedText }}
+                                >
                                   {item.ingredients || item.description}
                                 </p>
                               )}
@@ -1271,7 +1986,10 @@ export function PublicMenuClient({
                           </div>
 
                           <div className="flex items-center gap-3 shrink-0">
-                            <span className="font-black text-sm text-brand-orange">
+                            <span
+                              className="font-black text-sm"
+                              style={{ color: themeColors.accent }}
+                            >
                               {formatPrice(item.price, tenant.currency)}
                             </span>
                             {!unavailable &&
@@ -1279,27 +1997,37 @@ export function PublicMenuClient({
                                 <button
                                   type="button"
                                   onClick={() => addToCart(item)}
-                                  className="w-9 h-9 rounded-xl bg-orange-gradient text-white flex items-center justify-center shadow-orange-glow hover:brightness-110 transition"
+                                  className="w-9 h-9 rounded-xl flex items-center justify-center transition hover:brightness-110"
+                                  style={{
+                                    backgroundColor: themeColors.accent,
+                                    color: themeColors.buttonText,
+                                  }}
                                   aria-label={`أضف ${item.name}`}
                                 >
                                   <Plus className="w-4 h-4" />
                                 </button>
                               ) : (
-                                <div className="inline-flex items-center gap-2 rounded-xl px-2 py-1 bg-brand-orange/15 border border-brand-orange/35">
+                                <div
+                                  className="inline-flex items-center gap-2 rounded-xl px-2 py-1 border"
+                                  style={{
+                                    backgroundColor: themeColors.accentSoft,
+                                    borderColor: themeColors.accent,
+                                  }}
+                                >
                                   <button
                                     type="button"
                                     onClick={() => updateQty(item.id, -1)}
-                                    className="p-0.5 text-brand-orange"
+                                    className="p-0.5"
+                                    style={{ color: themeColors.accent }}
                                   >
                                     <Minus className="w-3.5 h-3.5" />
                                   </button>
-                                  <span className="text-xs font-black">
-                                    {qty}
-                                  </span>
+                                  <span className="text-xs font-black">{qty}</span>
                                   <button
                                     type="button"
                                     onClick={() => updateQty(item.id, 1)}
-                                    className="p-0.5 text-brand-orange"
+                                    className="p-0.5"
+                                    style={{ color: themeColors.accent }}
                                   >
                                     <Plus className="w-3.5 h-3.5" />
                                   </button>
@@ -1314,7 +2042,13 @@ export function PublicMenuClient({
 
                 {/* VIEW MODE: CLASSIC PAPER-INSPIRED MENU */}
                 {viewMode === "classic" && (
-                  <div className="rounded-3xl p-4 sm:p-6 glass-panel divide-y divide-navy-700/10 dark:divide-white/10">
+                  <div
+                    className="rounded-3xl p-4 sm:p-6 border divide-y"
+                    style={{
+                      backgroundColor: themeColors.card,
+                      borderColor: themeColors.border,
+                    }}
+                  >
                     {catItems.map((item) => {
                       const unavailable =
                         !item.is_available ||
@@ -1327,15 +2061,14 @@ export function PublicMenuClient({
                             "py-3.5 first:pt-1 last:pb-1 flex items-center justify-between gap-4",
                             unavailable && "opacity-60"
                           )}
+                          style={{ borderColor: themeColors.border }}
                         >
                           <div
                             onClick={() => openItemDetail(item)}
                             className="cursor-pointer min-w-0 flex-1 space-y-0.5"
                           >
                             <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="font-black text-base">
-                                {item.name}
-                              </h3>
+                              <h3 className="font-black text-base">{item.name}</h3>
                               {unavailable && (
                                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 font-bold">
                                   غير متوفر
@@ -1343,14 +2076,20 @@ export function PublicMenuClient({
                               )}
                             </div>
                             {(item.ingredients || item.description) && (
-                              <p className="text-xs text-slate-500 dark:text-slate-400">
+                              <p
+                                className="text-xs"
+                                style={{ color: themeColors.mutedText }}
+                              >
                                 {item.ingredients || item.description}
                               </p>
                             )}
                           </div>
 
                           <div className="flex items-center gap-3 shrink-0">
-                            <span className="font-black text-sm sm:text-base text-brand-orange">
+                            <span
+                              className="font-black text-sm sm:text-base"
+                              style={{ color: themeColors.accent }}
+                            >
                               {formatPrice(item.price, tenant.currency)}
                             </span>
                             {!unavailable &&
@@ -1358,26 +2097,36 @@ export function PublicMenuClient({
                                 <button
                                   type="button"
                                   onClick={() => addToCart(item)}
-                                  className="px-3 py-1.5 rounded-xl text-xs font-bold border border-brand-orange/40 text-brand-orange hover:bg-orange-gradient hover:text-white transition"
+                                  className="px-3 py-1.5 rounded-xl text-xs font-bold border transition"
+                                  style={{
+                                    borderColor: themeColors.accent,
+                                    color: themeColors.accent,
+                                  }}
                                 >
                                   + أضف
                                 </button>
                               ) : (
-                                <div className="inline-flex items-center gap-2 rounded-xl px-2 py-1 bg-brand-orange/15 border border-brand-orange/35">
+                                <div
+                                  className="inline-flex items-center gap-2 rounded-xl px-2 py-1 border"
+                                  style={{
+                                    backgroundColor: themeColors.accentSoft,
+                                    borderColor: themeColors.accent,
+                                  }}
+                                >
                                   <button
                                     type="button"
                                     onClick={() => updateQty(item.id, -1)}
-                                    className="p-0.5 text-brand-orange"
+                                    className="p-0.5"
+                                    style={{ color: themeColors.accent }}
                                   >
                                     <Minus className="w-3.5 h-3.5" />
                                   </button>
-                                  <span className="text-xs font-black">
-                                    {qty}
-                                  </span>
+                                  <span className="text-xs font-black">{qty}</span>
                                   <button
                                     type="button"
                                     onClick={() => updateQty(item.id, 1)}
-                                    className="p-0.5 text-brand-orange"
+                                    className="p-0.5"
+                                    style={{ color: themeColors.accent }}
                                   >
                                     <Plus className="w-3.5 h-3.5" />
                                   </button>
@@ -1406,7 +2155,11 @@ export function PublicMenuClient({
                   setSearch("");
                   setBadgeFilter("all");
                 }}
-                className="px-4 py-2 rounded-xl text-xs font-bold bg-orange-gradient text-white"
+                className="px-4 py-2 rounded-xl text-xs font-bold"
+                style={{
+                  backgroundColor: themeColors.accent,
+                  color: themeColors.buttonText,
+                }}
               >
                 إعادة ضبط الفلترة
               </button>
@@ -1415,14 +2168,26 @@ export function PublicMenuClient({
         )}
       </main>
 
-      {/* CREATIVE TENANT FOOTER */}
-      <footer className="border-t border-navy-700/10 dark:border-white/10 bg-slate-100/80 dark:bg-[#030B1A] mt-10">
+      {/* PROFESSIONAL TENANT & MENUZ BRANDED FOOTER */}
+      <footer
+        className="border-t mt-10"
+        style={{
+          backgroundColor: themeColors.surface,
+          borderColor: themeColors.border,
+        }}
+      >
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 space-y-8">
           {/* Electronic Wallets Strip */}
           {wallets.length > 0 && (
-            <div className="rounded-3xl p-6 glass-panel space-y-4">
+            <div
+              className="rounded-3xl p-6 border space-y-4"
+              style={{
+                backgroundColor: themeColors.card,
+                borderColor: themeColors.border,
+              }}
+            >
               <div className="flex items-center gap-2">
-                <WalletIcon className="w-5 h-5 text-brand-orange" />
+                <WalletIcon className="w-5 h-5" style={{ color: themeColors.accent }} />
                 <h3 className="font-extrabold text-base">
                   المحافظ الإلكترونية المتاحة للدفع
                 </h3>
@@ -1431,7 +2196,11 @@ export function PublicMenuClient({
                 {wallets.map((w) => (
                   <div
                     key={w.id}
-                    className="flex items-center justify-between gap-3 rounded-2xl p-3.5 bg-slate-100/80 dark:bg-navy-900/80 border border-navy-700/10 dark:border-white/10"
+                    className="flex items-center justify-between gap-3 rounded-2xl p-3.5 border"
+                    style={{
+                      backgroundColor: themeColors.surface,
+                      borderColor: themeColors.border,
+                    }}
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       {w.logo_url ? (
@@ -1443,7 +2212,13 @@ export function PublicMenuClient({
                           className="rounded-xl object-contain shrink-0"
                         />
                       ) : (
-                        <div className="w-9 h-9 rounded-xl bg-brand-orange/15 text-brand-orange flex items-center justify-center shrink-0">
+                        <div
+                          className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                          style={{
+                            backgroundColor: themeColors.accentSoft,
+                            color: themeColors.accent,
+                          }}
+                        >
                           <WalletIcon className="w-4 h-4" />
                         </div>
                       )}
@@ -1451,7 +2226,8 @@ export function PublicMenuClient({
                         <p className="text-sm font-bold truncate">{w.name}</p>
                         <p
                           dir="ltr"
-                          className="text-xs font-mono text-brand-orange truncate"
+                          className="text-xs font-mono truncate"
+                          style={{ color: themeColors.accent }}
                         >
                           {w.account_number}
                         </p>
@@ -1462,7 +2238,11 @@ export function PublicMenuClient({
                       onClick={() =>
                         copyText(w.account_number, w.id, `رقم محفظة ${w.name}`)
                       }
-                      className="p-2 rounded-xl bg-brand-orange/15 text-brand-orange hover:bg-brand-orange hover:text-white transition shrink-0"
+                      className="p-2 rounded-xl transition shrink-0"
+                      style={{
+                        backgroundColor: themeColors.accentSoft,
+                        color: themeColors.accent,
+                      }}
                       title="نسخ رقم المحفظة"
                     >
                       {copiedId === w.id ? (
@@ -1477,6 +2257,7 @@ export function PublicMenuClient({
             </div>
           )}
 
+          {/* Tenant info + Bottom Social Icons */}
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
             <div className="flex items-center gap-3.5">
               {tenant.logo_url && (
@@ -1485,13 +2266,14 @@ export function PublicMenuClient({
                   alt={tenant.name_ar}
                   width={52}
                   height={52}
-                  className="rounded-2xl object-cover border border-brand-orange/30"
+                  className="rounded-2xl object-cover border"
+                  style={{ borderColor: themeColors.accent }}
                 />
               )}
               <div>
                 <h4 className="font-black text-lg">{tenant.name_ar}</h4>
                 {tenant.address && (
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <p className="text-xs" style={{ color: themeColors.mutedText }}>
                     {tenant.address}
                   </p>
                 )}
@@ -1499,56 +2281,68 @@ export function PublicMenuClient({
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5">
-              {tenant.phone && (
-                <a
-                  href={`tel:${tenant.phone}`}
-                  className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold glass-panel hover:border-brand-orange/50"
-                >
-                  <Phone className="w-3.5 h-3.5 text-brand-orange" />
-                  <span dir="ltr">{tenant.phone}</span>
-                </a>
-              )}
-              {tenant.instagram && (
-                <a
-                  href={`https://instagram.com/${tenant.instagram.replace(
-                    "@",
-                    ""
-                  )}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold glass-panel hover:border-brand-orange/50"
-                >
-                  <Instagram className="w-3.5 h-3.5 text-brand-orange" />
-                  <span dir="ltr">@{tenant.instagram.replace("@", "")}</span>
-                </a>
-              )}
+              <TenantSocialIcons tenant={tenant} themeColors={themeColors} />
               <PwaInstallButton
                 variant="outline"
                 appTitle={tenant.name_ar}
                 label="تثبيت التطبيق"
               />
-              <Link
-                href="/"
-                className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold bg-navy-700 text-white hover:bg-navy-600 transition"
-              >
-                <Home className="w-3.5 h-3.5 text-brand-orange" />
-                <span>الصفحة الرئيسية العامة</span>
-              </Link>
             </div>
           </div>
 
-          <div className="pt-5 border-t border-navy-700/10 dark:border-white/10 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500 dark:text-slate-400">
+          {/* MENUZ Branded Signature Block */}
+          <div
+            className="rounded-3xl p-5 border flex flex-col sm:flex-row items-center justify-between gap-4"
+            style={{
+              backgroundColor: themeColors.card,
+              borderColor: themeColors.border,
+            }}
+          >
+            <div className="flex flex-col sm:flex-row items-center gap-4 text-center sm:text-right">
+              <MenuzLogo height={38} />
+              <div className="space-y-0.5">
+                <p className="font-display font-black text-sm" style={{ color: themeColors.accent }}>
+                  امسح.. اطلب.. واستمتع
+                </p>
+                <p className="text-xs font-bold">
+                  القائمة الرقمية الذكية.. لتجربة فريدة
+                </p>
+                <p className="text-[11px]" style={{ color: themeColors.mutedText }}>
+                  تصفح فوري وسهل من جوالك، مع سلة طلبات ذكية وتجربة ضيافة عصرية.
+                </p>
+              </div>
+            </div>
+
+            <Link
+              href="/"
+              className="shrink-0 inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-extrabold transition hover:brightness-110"
+              style={{
+                backgroundColor: themeColors.primary,
+                color: themeColors.primaryButtonText,
+              }}
+            >
+              <Home className="w-3.5 h-3.5" />
+              <span>منصة مينوز</span>
+            </Link>
+          </div>
+
+          <div
+            className="pt-4 border-t flex flex-col sm:flex-row items-center justify-between gap-4 text-xs"
+            style={{
+              borderColor: themeColors.border,
+              color: themeColors.mutedText,
+            }}
+          >
             <div className="flex items-center gap-3 text-center sm:text-right">
-              <SamerzLogo size={32} className="shrink-0" />
+              <SamerzLogo size={30} className="shrink-0" />
               <p className="font-semibold">
-                فكرة وتصميم وبرمجة شركة سامرز للحلول الذكية 776951100 - جميع
-                الحقوق محفوظة © 2027
+                فكرة وتصميم وبرمجة شركة سامرز للحلول الذكية 776951100 - جميع الحقوق محفوظة © 2027
               </p>
             </div>
 
             <Link
               href="/login"
-              className="inline-flex items-center gap-1 opacity-65 hover:opacity-100 hover:text-brand-orange transition shrink-0"
+              className="inline-flex items-center gap-1 opacity-70 hover:opacity-100 transition shrink-0"
               title="دخول لوحة الإدارة"
             >
               <Lock className="w-3 h-3" />
@@ -1573,16 +2367,20 @@ export function PublicMenuClient({
                 setInvoiceStep(false);
                 setCartOpen(true);
               }}
-              className="w-full rounded-2xl px-5 py-4 bg-orange-gradient text-white shadow-2xl shadow-brand-orange/40 flex items-center justify-between gap-4 hover:brightness-110 transition"
+              className="w-full rounded-2xl px-5 py-4 shadow-2xl flex items-center justify-between gap-4 hover:brightness-110 transition"
+              style={{
+                backgroundColor: themeColors.accent,
+                color: themeColors.buttonText,
+              }}
             >
               <div className="flex items-center gap-3">
-                <span className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center font-black text-sm">
+                <span className="w-8 h-8 rounded-xl bg-black/20 text-white flex items-center justify-center font-black text-sm">
                   {cartCount}
                 </span>
                 <div className="text-right">
                   <p className="font-extrabold text-sm">عرض سلة الطلبات</p>
-                  <p className="text-[11px] text-white/85">
-                    اضغط لمراجعة الفاتورة وإرسال الطلب
+                  <p className="text-[11px] opacity-85">
+                    اضغط لمراجعة الطلب والإرسال السريع
                   </p>
                 </div>
               </div>
@@ -1610,7 +2408,12 @@ export function PublicMenuClient({
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: 50, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl overflow-hidden glass-panel bg-white dark:bg-[#071A38] shadow-2xl"
+              className="w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl overflow-hidden shadow-2xl border"
+              style={{
+                backgroundColor: themeColors.card,
+                color: themeColors.text,
+                borderColor: themeColors.border,
+              }}
             >
               <div className="relative h-56 w-full">
                 {selectedItem.image_url ? (
@@ -1621,7 +2424,10 @@ export function PublicMenuClient({
                     className="object-cover"
                   />
                 ) : (
-                  <DishArtFallback name={selectedItem.name} />
+                  <DishArtFallback
+                    name={selectedItem.name}
+                    themeColors={themeColors}
+                  />
                 )}
                 <button
                   type="button"
@@ -1636,17 +2442,20 @@ export function PublicMenuClient({
                   <div>
                     <h3 className="text-2xl font-black">{selectedItem.name}</h3>
                     {selectedItem.ingredients && (
-                      <p className="text-sm text-slate-500 dark:text-slate-300 mt-1">
+                      <p className="text-sm mt-1" style={{ color: themeColors.mutedText }}>
                         {selectedItem.ingredients}
                       </p>
                     )}
                   </div>
-                  <span className="text-xl font-black text-brand-orange shrink-0">
+                  <span
+                    className="text-xl font-black shrink-0"
+                    style={{ color: themeColors.accent }}
+                  >
                     {formatPrice(selectedItem.price, tenant.currency)}
                   </span>
                 </div>
                 {selectedItem.description && (
-                  <p className="text-sm leading-relaxed text-navy-600 dark:text-slate-300">
+                  <p className="text-sm leading-relaxed" style={{ color: themeColors.mutedText }}>
                     {selectedItem.description}
                   </p>
                 )}
@@ -1659,10 +2468,13 @@ export function PublicMenuClient({
                       addToCart(selectedItem);
                       setSelectedItem(null);
                     }}
-                    className="w-full rounded-2xl py-3.5 text-sm font-extrabold bg-orange-gradient text-white shadow-orange-glow"
+                    className="w-full rounded-2xl py-3.5 text-sm font-extrabold transition hover:brightness-110"
+                    style={{
+                      backgroundColor: themeColors.accent,
+                      color: themeColors.buttonText,
+                    }}
                   >
-                    أضف للسلة —{" "}
-                    {formatPrice(selectedItem.price, tenant.currency)}
+                    أضف للسلة — {formatPrice(selectedItem.price, tenant.currency)}
                   </button>
                 ) : (
                   <div className="rounded-2xl py-3 text-center text-sm font-bold bg-rose-500/15 text-rose-400">
@@ -1675,7 +2487,7 @@ export function PublicMenuClient({
         )}
       </AnimatePresence>
 
-      {/* SLIDE-OVER CART & INVOICE DRAWER */}
+      {/* SLIDE-OVER CART & SIMPLIFIED CHECKOUT DRAWER */}
       <AnimatePresence>
         {cartOpen && (
           <motion.div
@@ -1691,31 +2503,75 @@ export function PublicMenuClient({
               exit={{ x: "-100%" }}
               transition={{ type: "spring", damping: 28, stiffness: 280 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md h-full bg-white dark:bg-[#040E21] border-r border-navy-700/15 dark:border-white/10 flex flex-col shadow-2xl"
+              className="w-full max-w-md h-full border-r flex flex-col shadow-2xl"
+              style={{
+                backgroundColor: themeColors.background,
+                color: themeColors.text,
+                borderColor: themeColors.border,
+              }}
             >
-              <div className="p-5 border-b border-navy-700/10 dark:border-white/10 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <ShoppingBag className="w-5 h-5 text-brand-orange" />
-                  <h2 className="text-lg font-black">
-                    {invoiceStep ? "مراجعة الفاتورة وإرسال الطلب" : "سلة الطلبات"}
+              {/* Cart Header with MENUZ Logo */}
+              <div
+                className="p-4 sm:p-5 border-b flex items-center justify-between gap-2"
+                style={{ borderColor: themeColors.border }}
+              >
+                <div className="flex items-center gap-3">
+                  <MenuzLogo height={28} />
+                  <h2 className="text-base sm:text-lg font-black">
+                    {invoiceStep ? "إتمام الطلب" : "سلة الطلبات"}
                   </h2>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setCartOpen(false)}
-                  className="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-white/10"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+                <div className="flex items-center gap-1.5">
+                  {cart.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={clearCart}
+                      className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold text-rose-500 hover:bg-rose-500/10"
+                    >
+                      إفراغ السلة
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setCartOpen(false)}
+                    className="p-2 rounded-xl hover:bg-black/10 dark:hover:bg-white/10"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
 
               <div className="flex-1 overflow-y-auto p-5 space-y-5">
                 {cart.length === 0 ? (
-                  <div className="py-16 text-center space-y-3">
-                    <ShoppingBag className="w-12 h-12 text-slate-400 mx-auto" />
-                    <p className="font-bold text-slate-500">
+                  <div className="py-16 text-center space-y-4">
+                    <ShoppingBag className="w-12 h-12 mx-auto opacity-45" />
+                    <p className="font-bold" style={{ color: themeColors.mutedText }}>
                       سلتك فارغة حالياً
                     </p>
+                    {restorableOrder && (
+                      <button
+                        type="button"
+                        onClick={restoreLastOrder}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold border"
+                        style={{
+                          borderColor: themeColors.accent,
+                          color: themeColors.accent,
+                        }}
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>استعادة الطلب السابق</span>
+                      </button>
+                    )}
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setCartOpen(false)}
+                        className="text-xs font-bold underline"
+                        style={{ color: themeColors.accent }}
+                      >
+                        العودة إلى المنيو
+                      </button>
+                    </div>
                   </div>
                 ) : !invoiceStep ? (
                   <>
@@ -1723,13 +2579,20 @@ export function PublicMenuClient({
                       {cart.map((line) => (
                         <div
                           key={line.item.id}
-                          className="rounded-2xl p-3.5 glass-card flex items-center justify-between gap-3"
+                          className="rounded-2xl p-3.5 border flex items-center justify-between gap-3"
+                          style={{
+                            backgroundColor: themeColors.card,
+                            borderColor: themeColors.border,
+                          }}
                         >
                           <div className="min-w-0">
                             <p className="font-bold text-sm truncate">
                               {line.item.name}
                             </p>
-                            <p className="text-xs text-brand-orange font-bold mt-0.5">
+                            <p
+                              className="text-xs font-bold mt-0.5"
+                              style={{ color: themeColors.accent }}
+                            >
                               {formatPrice(
                                 Number(line.item.price) * line.quantity,
                                 tenant.currency
@@ -1741,7 +2604,8 @@ export function PublicMenuClient({
                             <button
                               type="button"
                               onClick={() => updateQty(line.item.id, -1)}
-                              className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-navy-800 flex items-center justify-center"
+                              className="w-7 h-7 rounded-lg border flex items-center justify-center"
+                              style={{ borderColor: themeColors.border }}
                             >
                               <Minus className="w-3.5 h-3.5" />
                             </button>
@@ -1751,7 +2615,8 @@ export function PublicMenuClient({
                             <button
                               type="button"
                               onClick={() => updateQty(line.item.id, 1)}
-                              className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-navy-800 flex items-center justify-center"
+                              className="w-7 h-7 rounded-lg border flex items-center justify-center"
+                              style={{ borderColor: themeColors.border }}
                             >
                               <Plus className="w-3.5 h-3.5" />
                             </button>
@@ -1772,24 +2637,40 @@ export function PublicMenuClient({
                       ))}
                     </div>
 
-                    <div className="rounded-2xl p-4 bg-slate-100/80 dark:bg-navy-800/60 flex items-center justify-between">
+                    <div
+                      className="rounded-2xl p-4 border flex items-center justify-between"
+                      style={{
+                        backgroundColor: themeColors.card,
+                        borderColor: themeColors.border,
+                      }}
+                    >
                       <span className="font-bold text-sm">الإجمالي</span>
-                      <span className="font-black text-xl text-brand-orange">
+                      <span
+                        className="font-black text-xl"
+                        style={{ color: themeColors.accent }}
+                      >
                         {formatPrice(cartTotal, tenant.currency)}
                       </span>
                     </div>
                   </>
                 ) : (
                   <div className="space-y-4">
-                    <div className="rounded-2xl p-3.5 bg-slate-100/80 dark:bg-navy-800/60 space-y-2">
-                      <div className="flex items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
-                        <span>الأصناف المختارة ({cartCount})</span>
+                    <div
+                      className="rounded-2xl p-3.5 border space-y-2"
+                      style={{
+                        backgroundColor: themeColors.card,
+                        borderColor: themeColors.border,
+                      }}
+                    >
+                      <div className="flex items-center justify-between text-xs font-bold" style={{ color: themeColors.mutedText }}>
+                        <span>الأصناف ({cartCount})</span>
                         <button
                           type="button"
                           onClick={() => setInvoiceStep(false)}
-                          className="text-brand-orange hover:underline"
+                          className="hover:underline"
+                          style={{ color: themeColors.accent }}
                         >
-                          تعديل الأصناف
+                          تعديل السلة
                         </button>
                       </div>
                       {cart.map((c) => (
@@ -1808,32 +2689,44 @@ export function PublicMenuClient({
                           </span>
                         </div>
                       ))}
-                      <div className="pt-2 border-t border-navy-700/10 dark:border-white/10 flex justify-between font-black text-sm">
-                        <span>الإجمالي النهائي</span>
-                        <span className="text-brand-orange">
+                      <div
+                        className="pt-2 border-t flex justify-between font-black text-sm"
+                        style={{ borderColor: themeColors.border }}
+                      >
+                        <span>الإجمالي</span>
+                        <span style={{ color: themeColors.accent }}>
                           {formatPrice(cartTotal, tenant.currency)}
                         </span>
                       </div>
                     </div>
 
+                    {/* Optional Name & Optional Phone */}
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
-                        <label className="text-xs font-bold">الاسم *</label>
+                        <label className="text-xs font-bold">الاسم (اختياري)</label>
                         <input
                           value={customerName}
                           onChange={(e) => setCustomerName(e.target.value)}
-                          placeholder="اسمك الكريم"
-                          className="w-full rounded-xl px-3 py-2.5 text-sm bg-slate-100 dark:bg-navy-800 border border-navy-700/15 dark:border-white/15"
+                          placeholder="اسمك (اختياري)"
+                          className="w-full rounded-xl px-3 py-2.5 text-sm border"
+                          style={{
+                            backgroundColor: themeColors.card,
+                            borderColor: themeColors.border,
+                          }}
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-xs font-bold">رقم الجوال *</label>
+                        <label className="text-xs font-bold">الجوال (اختياري)</label>
                         <input
                           dir="ltr"
                           value={customerPhone}
                           onChange={(e) => setCustomerPhone(e.target.value)}
-                          placeholder="7xxxxxxx"
-                          className="w-full rounded-xl px-3 py-2.5 text-sm text-right bg-slate-100 dark:bg-navy-800 border border-navy-700/15 dark:border-white/15"
+                          placeholder="اختياري"
+                          className="w-full rounded-xl px-3 py-2.5 text-sm text-right border"
+                          style={{
+                            backgroundColor: themeColors.card,
+                            borderColor: themeColors.border,
+                          }}
                         />
                       </div>
                     </div>
@@ -1843,12 +2736,16 @@ export function PublicMenuClient({
                         <button
                           type="button"
                           onClick={() => setOrderType("delivery")}
-                          className={cn(
-                            "rounded-xl py-2.5 px-3 text-xs font-bold border flex items-center justify-center gap-1.5",
+                          className="rounded-xl py-2.5 px-3 text-xs font-bold border flex items-center justify-center gap-1.5 transition"
+                          style={
                             orderType === "delivery"
-                              ? "bg-brand-orange/20 border-brand-orange text-brand-orange"
-                              : "border-navy-700/15 dark:border-white/15"
-                          )}
+                              ? {
+                                  backgroundColor: themeColors.accentSoft,
+                                  borderColor: themeColors.accent,
+                                  color: themeColors.accent,
+                                }
+                              : { borderColor: themeColors.border }
+                          }
                         >
                           <Truck className="w-4 h-4" />
                           <span>توصيل للموقع</span>
@@ -1858,12 +2755,18 @@ export function PublicMenuClient({
                         type="button"
                         onClick={() => setOrderType("pickup")}
                         className={cn(
-                          "rounded-xl py-2.5 px-3 text-xs font-bold border flex items-center justify-center gap-1.5",
-                          orderType === "pickup"
-                            ? "bg-brand-orange/20 border-brand-orange text-brand-orange"
-                            : "border-navy-700/15 dark:border-white/15",
+                          "rounded-xl py-2.5 px-3 text-xs font-bold border flex items-center justify-center gap-1.5 transition",
                           !tenant.has_delivery && "col-span-2"
                         )}
+                        style={
+                          orderType === "pickup"
+                            ? {
+                                backgroundColor: themeColors.accentSoft,
+                                borderColor: themeColors.accent,
+                                color: themeColors.accent,
+                              }
+                            : { borderColor: themeColors.border }
+                        }
                       >
                         <Store className="w-4 h-4" />
                         <span>استلام من الفرع</span>
@@ -1873,31 +2776,37 @@ export function PublicMenuClient({
                     {orderType === "delivery" && (
                       <div className="space-y-1">
                         <label className="text-xs font-bold">
-                          عنوان التوصيل بالتفصيل *
+                          عنوان التوصيل *
                         </label>
                         <input
                           value={deliveryAddress}
                           onChange={(e) => setDeliveryAddress(e.target.value)}
                           placeholder="الحي، الشارع، أقرب معلم..."
-                          className="w-full rounded-xl px-3 py-2.5 text-sm bg-slate-100 dark:bg-navy-800 border border-navy-700/15 dark:border-white/15"
+                          className="w-full rounded-xl px-3 py-2.5 text-sm border"
+                          style={{
+                            backgroundColor: themeColors.card,
+                            borderColor: themeColors.border,
+                          }}
                         />
                       </div>
                     )}
 
                     <div className="space-y-2.5">
-                      <label className="text-xs font-bold block">
-                        طريقة الدفع
-                      </label>
+                      <label className="text-xs font-bold block">طريقة الدفع</label>
                       <div className="grid grid-cols-2 gap-2.5">
                         <button
                           type="button"
                           onClick={() => setPaymentMethod("cash")}
-                          className={cn(
-                            "rounded-xl py-2.5 px-3 text-xs font-bold border flex items-center justify-center gap-1.5",
+                          className="rounded-xl py-2.5 px-3 text-xs font-bold border flex items-center justify-center gap-1.5 transition"
+                          style={
                             paymentMethod === "cash"
-                              ? "bg-brand-orange/20 border-brand-orange text-brand-orange"
-                              : "border-navy-700/15 dark:border-white/15"
-                          )}
+                              ? {
+                                  backgroundColor: themeColors.accentSoft,
+                                  borderColor: themeColors.accent,
+                                  color: themeColors.accent,
+                                }
+                              : { borderColor: themeColors.border }
+                          }
                         >
                           <Banknote className="w-4 h-4" />
                           <span>نقداً عند الاستلام</span>
@@ -1907,12 +2816,16 @@ export function PublicMenuClient({
                           type="button"
                           disabled={wallets.length === 0}
                           onClick={() => setPaymentMethod("wallet")}
-                          className={cn(
-                            "rounded-xl py-2.5 px-3 text-xs font-bold border flex items-center justify-center gap-1.5 disabled:opacity-45",
+                          className="rounded-xl py-2.5 px-3 text-xs font-bold border flex items-center justify-center gap-1.5 disabled:opacity-45 transition"
+                          style={
                             paymentMethod === "wallet"
-                              ? "bg-brand-orange/20 border-brand-orange text-brand-orange"
-                              : "border-navy-700/15 dark:border-white/15"
-                          )}
+                              ? {
+                                  backgroundColor: themeColors.accentSoft,
+                                  borderColor: themeColors.accent,
+                                  color: themeColors.accent,
+                                }
+                              : { borderColor: themeColors.border }
+                          }
                         >
                           <WalletIcon className="w-4 h-4" />
                           <span>محفظة إلكترونية</span>
@@ -1920,18 +2833,29 @@ export function PublicMenuClient({
                       </div>
 
                       {paymentMethod === "wallet" && wallets.length > 0 && (
-                        <div className="rounded-2xl p-3.5 bg-slate-100 dark:bg-navy-800/80 border border-brand-orange/30 space-y-3">
+                        <div
+                          className="rounded-2xl p-3.5 border space-y-3"
+                          style={{
+                            backgroundColor: themeColors.card,
+                            borderColor: themeColors.accent,
+                          }}
+                        >
                           <div className="space-y-2">
                             {wallets.map((w) => (
                               <div
                                 key={w.id}
                                 onClick={() => setSelectedWalletId(w.id)}
-                                className={cn(
-                                  "cursor-pointer rounded-xl p-2.5 border flex items-center justify-between gap-2 transition",
-                                  selectedWallet?.id === w.id
-                                    ? "border-brand-orange bg-brand-orange/10"
-                                    : "border-navy-700/10 dark:border-white/10"
-                                )}
+                                className="cursor-pointer rounded-xl p-2.5 border flex items-center justify-between gap-2 transition"
+                                style={{
+                                  borderColor:
+                                    selectedWallet?.id === w.id
+                                      ? themeColors.accent
+                                      : themeColors.border,
+                                  backgroundColor:
+                                    selectedWallet?.id === w.id
+                                      ? themeColors.accentSoft
+                                      : "transparent",
+                                }}
                               >
                                 <div className="flex items-center gap-2.5 min-w-0">
                                   {w.logo_url ? (
@@ -1943,18 +2867,20 @@ export function PublicMenuClient({
                                       className="rounded-lg object-contain"
                                     />
                                   ) : (
-                                    <WalletIcon className="w-4 h-4 text-brand-orange shrink-0" />
+                                    <WalletIcon
+                                      className="w-4 h-4 shrink-0"
+                                      style={{ color: themeColors.accent }}
+                                    />
                                   )}
                                   <div className="min-w-0">
                                     <p className="text-xs font-bold truncate">
                                       {w.name}
-                                      {w.account_name
-                                        ? ` (${w.account_name})`
-                                        : ""}
+                                      {w.account_name ? ` (${w.account_name})` : ""}
                                     </p>
                                     <p
                                       dir="ltr"
-                                      className="text-xs font-mono text-brand-orange"
+                                      className="text-xs font-mono"
+                                      style={{ color: themeColors.accent }}
                                     >
                                       {w.account_number}
                                     </p>
@@ -1970,7 +2896,11 @@ export function PublicMenuClient({
                                       w.name
                                     );
                                   }}
-                                  className="px-2.5 py-1 rounded-lg bg-brand-orange/20 text-brand-orange text-[11px] font-bold"
+                                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold"
+                                  style={{
+                                    backgroundColor: themeColors.accentSoft,
+                                    color: themeColors.accent,
+                                  }}
                                 >
                                   نسخ
                                 </button>
@@ -1987,7 +2917,11 @@ export function PublicMenuClient({
                               value={transactionRef}
                               onChange={(e) => setTransactionRef(e.target.value)}
                               placeholder="أدخل رقم إشعار التحويل"
-                              className="w-full rounded-xl px-3 py-2 text-sm text-right bg-white dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+                              className="w-full rounded-xl px-3 py-2 text-sm text-right border"
+                              style={{
+                                backgroundColor: themeColors.surface,
+                                borderColor: themeColors.border,
+                              }}
                             />
                           </div>
                         </div>
@@ -2002,7 +2936,11 @@ export function PublicMenuClient({
                         value={orderNotes}
                         onChange={(e) => setOrderNotes(e.target.value)}
                         placeholder="بدون شطة، زيادة جبن..."
-                        className="w-full rounded-xl px-3 py-2.5 text-sm bg-slate-100 dark:bg-navy-800 border border-navy-700/15 dark:border-white/15"
+                        className="w-full rounded-xl px-3 py-2.5 text-sm border"
+                        style={{
+                          backgroundColor: themeColors.card,
+                          borderColor: themeColors.border,
+                        }}
                       />
                     </div>
                   </div>
@@ -2010,32 +2948,62 @@ export function PublicMenuClient({
               </div>
 
               {cart.length > 0 && (
-                <div className="p-5 border-t border-navy-700/10 dark:border-white/10 space-y-2.5">
+                <div
+                  className="p-5 border-t space-y-2.5"
+                  style={{ borderColor: themeColors.border }}
+                >
                   {!invoiceStep ? (
-                    <button
-                      type="button"
-                      onClick={() => setInvoiceStep(true)}
-                      className="w-full rounded-2xl py-3.5 text-sm font-extrabold bg-orange-gradient text-white shadow-orange-glow hover:brightness-110 transition"
-                    >
-                      متابعة وإصدار الفاتورة (
-                      {formatPrice(cartTotal, tenant.currency)})
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCartOpen(false)}
+                        className="rounded-2xl px-4 py-3.5 text-xs font-bold border"
+                        style={{ borderColor: themeColors.border }}
+                      >
+                        العودة للمنيو
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setInvoiceStep(true)}
+                        className="flex-1 rounded-2xl py-3.5 text-sm font-extrabold transition hover:brightness-110"
+                        style={{
+                          backgroundColor: themeColors.accent,
+                          color: themeColors.buttonText,
+                        }}
+                      >
+                        متابعة الطلب ({formatPrice(cartTotal, tenant.currency)})
+                      </button>
+                    </div>
                   ) : (
                     <>
                       <button
                         type="button"
+                        disabled={submittingOrder}
                         onClick={() => handleSendOrder("whatsapp")}
-                        className="w-full rounded-2xl py-3.5 text-sm font-extrabold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center gap-2 shadow-lg transition"
+                        className="w-full rounded-2xl py-3.5 text-sm font-extrabold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center gap-2 shadow-lg transition disabled:opacity-65"
                       >
-                        <MessageCircle className="w-4 h-4" />
-                        <span>إرسال الفاتورة عبر واتساب</span>
+                        {submittingOrder ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <MessageCircle className="w-4 h-4" />
+                        )}
+                        <span>
+                          {submittingOrder
+                            ? "جاري تأكيد الطلب..."
+                            : "إرسال الطلب عبر واتساب"}
+                        </span>
                       </button>
                       <button
                         type="button"
+                        disabled={submittingOrder}
                         onClick={() => handleSendOrder("sms")}
-                        className="w-full rounded-2xl py-3 text-xs font-bold border border-navy-700/20 dark:border-white/15 flex items-center justify-center gap-2 hover:border-brand-orange/60 transition"
+                        className="w-full rounded-2xl py-3 text-xs font-bold border flex items-center justify-center gap-2 transition disabled:opacity-65"
+                        style={{ borderColor: themeColors.border }}
                       >
-                        <MessageSquareText className="w-4 h-4 text-brand-orange" />
+                        <MessageSquareText
+                          className="w-4 h-4"
+                          style={{ color: themeColors.accent }}
+                        />
                         <span>إرسال عبر رسالة نصية (SMS)</span>
                       </button>
                     </>
@@ -2044,6 +3012,21 @@ export function PublicMenuClient({
               )}
             </motion.aside>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* THANK YOU SCREEN + OPTIONAL SUPER-ADMIN-ONLY RATING */}
+      <AnimatePresence>
+        {completedOrder && (
+          <ThankYouFeedbackModal
+            tenantId={tenant.id}
+            tenantName={tenant.name_ar}
+            themeColors={themeColors}
+            summary={completedOrder}
+            onClose={() => setCompletedOrder(null)}
+            onRestoreOrder={restoreLastOrder}
+            onToast={toast}
+          />
         )}
       </AnimatePresence>
     </div>

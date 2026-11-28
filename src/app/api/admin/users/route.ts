@@ -3,7 +3,12 @@ import { z } from "zod";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { createAdminSupabase } from "@/lib/supabase/admin";
 import { validateStrongPassword } from "@/lib/utils";
-import { verifySameOrigin, writeAuditLog } from "@/lib/security";
+import {
+  buildRateLimitKey,
+  enforceRateLimit,
+  verifySameOrigin,
+  writeAuditLog,
+} from "@/lib/security";
 
 async function requireSuperAdmin() {
   const supabase = await createServerSupabase();
@@ -23,12 +28,33 @@ async function requireSuperAdmin() {
 }
 
 const createAccountSchema = z.object({
-  email: z.string().trim().email("البريد الإلكتروني غير صالح"),
-  password: z.string().min(8),
-  fullName: z.string().trim().min(2, "الاسم مطلوب"),
+  email: z.string().trim().email("البريد الإلكتروني غير صالح").max(160),
+  password: z.string().min(8).max(128),
+  fullName: z.string().trim().min(2, "الاسم مطلوب").max(120),
   role: z.enum(["client_admin", "super_admin"]).default("client_admin"),
   tenantId: z.string().uuid().nullable().optional(),
 });
+
+async function enforceAdminRateLimit(adminId: string, scope: string) {
+  const rl = await enforceRateLimit(
+    buildRateLimitKey(scope, adminId),
+    30,
+    600
+  );
+  if (rl.status === "rate_limited") {
+    return NextResponse.json(
+      { error: "تم تجاوز الحد المسموح للعمليات الإدارية، يرجى الانتظار قليلاً" },
+      { status: 429 }
+    );
+  }
+  if (rl.status === "unavailable") {
+    return NextResponse.json(
+      { error: "خدمة التحقق الأمني غير متاحة مؤقتاً" },
+      { status: 503 }
+    );
+  }
+  return null;
+}
 
 export async function POST(request: NextRequest) {
   if (!verifySameOrigin(request)) {
@@ -39,6 +65,8 @@ export async function POST(request: NextRequest) {
   if (!actor) {
     return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
   }
+  const limited = await enforceAdminRateLimit(actor.id, "admin-users-post");
+  if (limited) return limited;
 
   let body: unknown;
   try {
@@ -124,14 +152,18 @@ export async function DELETE(request: NextRequest) {
   if (!actor) {
     return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
   }
+  const limited = await enforceAdminRateLimit(actor.id, "admin-users-del");
+  if (limited) return limited;
 
-  const userId = request.nextUrl.searchParams.get("id");
-  if (!userId || userId === actor.id) {
+  const rawUserId = request.nextUrl.searchParams.get("id");
+  const parsedId = z.string().uuid().safeParse(rawUserId);
+  if (!parsedId.success || parsedId.data === actor.id) {
     return NextResponse.json(
       { error: "لا يمكن حذف هذا الحساب" },
       { status: 400 }
     );
   }
+  const userId = parsedId.data;
 
   const admin = createAdminSupabase();
   const { error } = await admin.auth.admin.deleteUser(userId);

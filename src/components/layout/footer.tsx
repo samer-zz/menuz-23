@@ -91,8 +91,8 @@ export function Footer() {
             فكرة وتصميم وبرمجة شركة سامرز للحلول الذكية 776951100 - جميع الحقوق
             محفوظة © 2027
           </p>
-          <p className="tracking-widest font-semibold text-brand-orange">
-            MENUZ v3.0 • SCAN • ORDER • ENJOY
+          <p className="font-semibold text-brand-orange">
+            امسح.. اطلب.. واستمتع • القائمة الرقمية الذكية.. لتجربة فريدة
           </p>
         </div>
       </div>

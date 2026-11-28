@@ -32,10 +32,17 @@ export const metadata: Metadata = {
     locale: "ar_YE",
     url: siteUrl,
     siteName: "مينوز | MENUZ",
-    title: "مينوز | MENUZ — منصة المنيو الرقمي الذكي",
+    title: "مينوز | MENUZ — امسح.. اطلب.. واستمتع",
     description:
-      "امسح .. اطلب .. واستمتع | تجربة منيو رقمي فاخرة للمطاعم والكافيهات من شركة سامرز للحلول الذكية.",
+      "القائمة الرقمية الذكية.. لتجربة فريدة | تجربة منيو رقمي فاخرة للمطاعم والكافيهات من شركة سامرز للحلول الذكية.",
     images: [{ url: "/branding/menuz_brand_showcase.png", width: 1200, height: 800 }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "مينوز | MENUZ — امسح.. اطلب.. واستمتع",
+    description:
+      "القائمة الرقمية الذكية.. لتجربة فريدة من شركة سامرز للحلول الذكية.",
+    images: ["/branding/menuz_brand_showcase.png"],
   },
 };
 

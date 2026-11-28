@@ -11,12 +11,12 @@ export async function GET(
   let appName = "مينوز | MENUZ — المنيو الرقمي الذكي";
   let shortName = "MENUZ";
   let description =
-    "امسح .. اطلب .. واستمتع | منصة المنيوهات الرقمية التفاعلية من شركة سامرز للحلول الذكية";
+    "امسح.. اطلب.. واستمتع | القائمة الرقمية الذكية.. لتجربة فريدة";
   let startUrl = "/";
   let themeColor = "#0B2D5B";
   const backgroundColor = "#040E21";
-  let iconUrl = "/icons/icon-192.png";
-  let iconLargeUrl = "/icons/icon-512.png";
+  let iconUrl192 = "/icons/icon-192.png";
+  let iconUrl512 = "/icons/icon-512.png";
 
   if (normalizedSlug && normalizedSlug !== "default") {
     try {
@@ -35,9 +35,9 @@ export async function GET(
           `تصفح واطلب مباشرة من منيو ${tenant.name_ar} عبر مينوز`;
         startUrl = `/m/${tenant.slug}`;
         themeColor = tenant.primary_color || "#0B2D5B";
-        if (tenant.logo_url && tenant.logo_url.startsWith("/")) {
-          iconUrl = tenant.logo_url;
-          iconLargeUrl = tenant.logo_url;
+        if (tenant.logo_url) {
+          iconUrl192 = `/api/manifest/${encodeURIComponent(tenant.slug)}/icon?size=192`;
+          iconUrl512 = `/api/manifest/${encodeURIComponent(tenant.slug)}/icon?size=512`;
         }
       }
     } catch {
@@ -60,13 +60,13 @@ export async function GET(
     lang: "ar",
     icons: [
       {
-        src: iconUrl,
+        src: iconUrl192,
         sizes: "192x192",
         type: "image/png",
         purpose: "any maskable",
       },
       {
-        src: iconLargeUrl,
+        src: iconUrl512,
         sizes: "512x512",
         type: "image/png",
         purpose: "any maskable",

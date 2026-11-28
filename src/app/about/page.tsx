@@ -72,13 +72,13 @@ export default function AboutPage() {
               },
               {
                 icon: Cpu,
-                title: "تقنية سحابية حديثة",
-                desc: "بنية مبنية على Next.js وSupabase وVercel لضمان سرعة الاستجابة والاستقرار التام.",
+                title: "أداء سحابي فائق الموثوقية",
+                desc: "بنية سحابية حديثة مصممة لفتح القوائم في أجزاء من الثانية واستيعاب أوقات الذروة بكفاءة عالية واستقرار دائم.",
               },
               {
                 icon: ShieldCheck,
                 title: "أمان وخصوصية تامة",
-                desc: "عزل كامل لبيانات كل جهة عبر سياسات Row Level Security وتشفير شامل للجلسات.",
+                desc: "عزل كامل لبيانات كل منشأة عن الأخرى مع تشفير شامل للجلسات وصلاحيات محكمة لحماية أعمالك.",
               },
             ].map((card) => (
               <div key={card.title} className="rounded-3xl p-7 glass-card space-y-3">
