@@ -29,7 +29,11 @@ import {
   Search,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { compressImageFile, validateImageFile } from "@/lib/image-compress";
+import {
+  compressImageFile,
+  MAX_CLIENT_IMAGE_BYTES,
+  validateImageFile,
+} from "@/lib/image-compress";
 import { useApp } from "@/components/providers/theme-provider";
 import { MenuzLogo } from "@/components/ui/brand-logo";
 import { AnalyticsCharts } from "@/components/dashboard/analytics-charts";
@@ -146,6 +150,10 @@ export function SuperAdminClient({
     setUploadingMedia(true);
     try {
       const compressed = await compressImageFile(file);
+      if (compressed.size > MAX_CLIENT_IMAGE_BYTES) {
+        toast("حجم الصورة يتجاوز الحد الأقصى المسموح (4 ميجابايت)", "error");
+        return null;
+      }
       const formData = new FormData();
       formData.append("file", compressed);
       formData.append("folder", folder);

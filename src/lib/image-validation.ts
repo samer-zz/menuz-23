@@ -1,3 +1,5 @@
+import sharp from "sharp";
+
 export type AllowedImageMime = "image/jpeg" | "image/png" | "image/webp";
 
 export interface ImageValidationResult {
@@ -9,13 +11,24 @@ export interface ImageValidationResult {
   error?: string;
 }
 
-export const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
+export interface SanitizedImageResult {
+  valid: boolean;
+  buffer?: Buffer;
+  mime?: "image/webp";
+  ext?: "webp";
+  width?: number;
+  height?: number;
+  error?: string;
+}
+
+// Aligned under Vercel Hobby's 4.5MB Serverless Function request payload limit
+export const MAX_IMAGE_UPLOAD_BYTES = 4 * 1024 * 1024; // 4 MiB
+export const MAX_IMAGE_DIMENSION_PX = 6000;
+export const MAX_IMAGE_PIXELS = 25_000_000; // 25 MP
 const MIN_DIMENSION_PX = 16;
-const MAX_DIMENSION_PX = 8000;
 
 function parsePngDimensions(buf: Buffer): { width: number; height: number } | null {
   if (buf.length < 24) return null;
-  // IHDR chunk should start at byte 12
   if (buf.toString("ascii", 12, 16) !== "IHDR") return null;
   const width = buf.readUInt32BE(16);
   const height = buf.readUInt32BE(20);
@@ -26,7 +39,6 @@ function parseWebpDimensions(buf: Buffer): { width: number; height: number } | n
   if (buf.length < 30) return null;
   const chunk = buf.toString("ascii", 12, 16);
   if (chunk === "VP8 " && buf.length >= 30) {
-    // Lossy VP8 bitstream starts at byte 20, keyframe tag at 23..25
     if (buf[23] !== 0x9d || buf[24] !== 0x01 || buf[25] !== 0x2a) return null;
     const width = buf.readUInt16LE(26) & 0x3fff;
     const height = buf.readUInt16LE(28) & 0x3fff;
@@ -63,7 +75,6 @@ function parseJpegDimensions(buf: Buffer): { width: number; height: number } | n
       offset++;
       continue;
     }
-    // Standalone markers (RST, SOI, EOI, TEM)
     if (
       marker === 0x00 ||
       marker === 0x01 ||
@@ -76,7 +87,6 @@ function parseJpegDimensions(buf: Buffer): { width: number; height: number } | n
     if (segmentLength < 2 || offset + 2 + segmentLength > buf.length) {
       return null;
     }
-    // SOF0..SOF3, SOF5..SOF7, SOF9..SOF11, SOF13..SOF15
     const isSof =
       (marker >= 0xc0 && marker <= 0xc3) ||
       (marker >= 0xc5 && marker <= 0xc7) ||
@@ -97,14 +107,13 @@ export function validateImageBuffer(buf: Buffer): ImageValidationResult {
     return { valid: false, error: "الملف فارغ" };
   }
   if (buf.length > MAX_IMAGE_UPLOAD_BYTES) {
-    return { valid: false, error: "حجم الصورة يتجاوز الحد المسموح (5MB)" };
+    return { valid: false, error: "حجم الصورة يتجاوز الحد المسموح (4 ميجابايت)" };
   }
 
   let mime: AllowedImageMime | null = null;
   let ext: "jpg" | "png" | "webp" | null = null;
   let dims: { width: number; height: number } | null = null;
 
-  // Reject text/XML/SVG/HTML payloads immediately
   const headText = buf.subarray(0, 64).toString("utf8").trimStart().toLowerCase();
   if (
     headText.startsWith("<svg") ||
@@ -155,12 +164,13 @@ export function validateImageBuffer(buf: Buffer): ImageValidationResult {
   if (
     dims.width < MIN_DIMENSION_PX ||
     dims.height < MIN_DIMENSION_PX ||
-    dims.width > MAX_DIMENSION_PX ||
-    dims.height > MAX_DIMENSION_PX
+    dims.width > MAX_IMAGE_DIMENSION_PX ||
+    dims.height > MAX_IMAGE_DIMENSION_PX ||
+    dims.width * dims.height > MAX_IMAGE_PIXELS
   ) {
     return {
       valid: false,
-      error: `أبعاد الصورة (${dims.width}x${dims.height}) خارج النطاق المنطقي المسموح`,
+      error: `أبعاد الصورة (${dims.width}x${dims.height}) خارج النطاق المسموح`,
     };
   }
 
@@ -171,4 +181,92 @@ export function validateImageBuffer(buf: Buffer): ImageValidationResult {
     width: dims.width,
     height: dims.height,
   };
+}
+
+/**
+ * Fully decodes the image on the server via sharp (rejecting truncated/corrupted payloads
+ * even if the header is valid), validates dimensions/total pixels, strips EXIF/metadata,
+ * and re-encodes cleanly to WebP for menu performance.
+ */
+export async function decodeAndSanitizeImage(
+  buf: Buffer
+): Promise<SanitizedImageResult> {
+  const headerCheck = validateImageBuffer(buf);
+  if (!headerCheck.valid) {
+    return { valid: false, error: headerCheck.error };
+  }
+
+  try {
+    const pipeline = sharp(buf, {
+      failOn: "error",
+      limitInputPixels: MAX_IMAGE_PIXELS,
+      animated: false,
+    });
+
+    const meta = await pipeline.metadata();
+    if (
+      meta.format !== "jpeg" &&
+      meta.format !== "png" &&
+      meta.format !== "webp"
+    ) {
+      return {
+        valid: false,
+        error: "صيغة الصورة الفعلية غير مدعومة؛ يُسمح بـ JPG وPNG وWebP فقط",
+      };
+    }
+
+    const width = meta.width ?? 0;
+    const height = meta.height ?? 0;
+    if (
+      width < MIN_DIMENSION_PX ||
+      height < MIN_DIMENSION_PX ||
+      width > MAX_IMAGE_DIMENSION_PX ||
+      height > MAX_IMAGE_DIMENSION_PX ||
+      width * height > MAX_IMAGE_PIXELS
+    ) {
+      return {
+        valid: false,
+        error: `أبعاد الصورة (${width}x${height}) تتجاوز الحد المسموح`,
+      };
+    }
+
+    // Full pixel decode + strip all EXIF/XMP/IPTC metadata + clean WebP re-encode
+    const { data, info } = await pipeline
+      .rotate()
+      .resize({
+        width: 1600,
+        height: 1600,
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .webp({
+        quality: 86,
+        alphaQuality: 90,
+      })
+      .toBuffer({ resolveWithObject: true });
+
+    if (!data || data.length === 0) {
+      return { valid: false, error: "فشل ترميز الصورة" };
+    }
+    if (data.length > MAX_IMAGE_UPLOAD_BYTES) {
+      return {
+        valid: false,
+        error: "حجم الصورة بعد المعالجة يتجاوز 4 ميجابايت، يرجى اختيار صورة أصغر",
+      };
+    }
+
+    return {
+      valid: true,
+      buffer: data,
+      mime: "image/webp",
+      ext: "webp",
+      width: info.width,
+      height: info.height,
+    };
+  } catch {
+    return {
+      valid: false,
+      error: "ملف الصورة تالف أو مبتور ولا يمكن فك ترميزه بأمان",
+    };
+  }
 }

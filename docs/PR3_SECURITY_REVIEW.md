@@ -5,6 +5,8 @@
 الفرع: `arena/296f4909-menuz-23` | طلب السحب: **PR #3**  
 مشروع Supabase المرتبط بـ Vercel (`production` / `preview` / `development`): **`fmdfueuezjhnwwchoock`**
 
+> **تحديث التحقق النهائي (2026-11-20)**: تم تنفيذ موجة التحصين النهائية قبل دمج PR #3 (توحيد حد `4MiB`، فك ترميز الصور الفعلي بالخادم via `sharp`، وPre-auth IP Rate Limit في `/api/media/upload`، واختبارات Storage RLS على Supabase). التفاصيل الكاملة في [PR3_FINAL_VALIDATION.md](./PR3_FINAL_VALIDATION.md).
+
 ---
 
 ## 1. الخلاصة التنفيذية وحالة التوافق الحرجة (Supabase ↔ الإنتاج)

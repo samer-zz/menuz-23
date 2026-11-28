@@ -6,7 +6,8 @@ const ALLOWED_IMAGE_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
+// Aligned with server & Vercel Hobby 4.5MB payload limit
+export const MAX_CLIENT_IMAGE_BYTES = 4 * 1024 * 1024; // 4 MiB
 
 async function hasValidImageMagicBytes(file: File): Promise<boolean> {
   try {
@@ -64,10 +65,10 @@ export async function validateImageFile(
     };
   }
 
-  if (file.size <= 0 || file.size > MAX_IMAGE_BYTES) {
+  if (file.size <= 0 || file.size > MAX_CLIENT_IMAGE_BYTES) {
     return {
       valid: false,
-      error: "حجم الصورة يجب أن يكون أقل من 5 ميجابايت.",
+      error: "حجم الصورة يجب أن يكون أقل من 4 ميجابايت.",
     };
   }
 
@@ -83,8 +84,8 @@ export async function validateImageFile(
 }
 
 /**
- * Compresses an image file in the browser via Canvas before uploading to Supabase Storage.
- * Keeps storage lean on the Supabase Free Tier and speeds up mobile menu loading.
+ * Compresses an image file in the browser via Canvas before uploading to the server.
+ * Keeps uploads well below the 4 MiB limit and speeds up mobile menu loading.
  */
 export async function compressImageFile(
   file: File,

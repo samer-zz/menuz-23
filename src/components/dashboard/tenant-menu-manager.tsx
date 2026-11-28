@@ -17,7 +17,11 @@ import {
   Bell,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { compressImageFile, validateImageFile } from "@/lib/image-compress";
+import {
+  compressImageFile,
+  MAX_CLIENT_IMAGE_BYTES,
+  validateImageFile,
+} from "@/lib/image-compress";
 import { useApp } from "@/components/providers/theme-provider";
 import { EmptyStateCard } from "@/components/ui/skeletons";
 import { cn, formatArabicDate, formatPrice } from "@/lib/utils";
@@ -139,6 +143,10 @@ export function TenantMenuManager({
     setUploading(true);
     try {
       const compressed = await compressImageFile(file);
+      if (compressed.size > MAX_CLIENT_IMAGE_BYTES) {
+        toast("حجم الصورة يتجاوز الحد الأقصى المسموح (4 ميجابايت)", "error");
+        return null;
+      }
       const formData = new FormData();
       formData.append("file", compressed);
       formData.append("folder", folder);

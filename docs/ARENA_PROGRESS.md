@@ -74,11 +74,16 @@
 ---
 
 ## 4. نتائج الاختبارات الفعلية (آخر تشغيل)
-- `node --test tests/security.test.mjs`: **نجح (5 / 5)**.
+- `node --test tests/security.test.mjs`: **نجح (6 / 6)**.
 - `npm run typecheck`: **نجح (0 أخطاء)**.
 - `npm run lint`: **نجح (0 تحذيرات/أخطاء)**.
 - `npm run build`: **نجح (25 مساراً)**.
-- فحص HTTP على الخادم الإنتاجي المحلي (`next start`): تأكيد غياب `'unsafe-eval'` في Production CSP، وإرجاع `503` Fail-Closed على `login`, `contact`, `analytics/event`, `demo/ensure`, `media/upload` عند غياب مخزن الحماية، وإرجاع `200` للصفحات العامة، و`403` لغياب Origin.
+- **تحديث التحقق النهائي (`docs/PR3_FINAL_VALIDATION.md`)**:
+  - توحيد حد رفع الصور إلى **`4MiB` (`4 * 1024 * 1024`)** في العميل والخادم.
+  - إضافة **Pre-auth IP Rate Limit** (`40/10m`) قبل `supabase.auth.getUser()` ومنع استعلام `profiles` لغير المصادقين والتحقق من وجود `tenantId` عند `super_admin`.
+  - ترقية `src/lib/image-validation.ts` لاستخدام **`sharp`** (`decodeAndSanitizeImage`) لفك الترميز الحقيقي على الخادم ورفض الملفات المبتورة/التالفة وإزالة EXIF/Metadata.
+  - التحقق الفعلي من **Storage RLS** على `menus-media` في Supabase `fmdfueuezjhnwwchoock` بدون `Service Role`.
+- فحص HTTP على الخادم الإنتاجي المحلي (`next start`): تأكيد غياب `'unsafe-eval'` في Production CSP، وإرجاع `503` Fail-Closed على `login`, `contact`, `analytics/event`, `demo/ensure`, `media/upload` عند غياب مخزن الحماية، وإرجاع `200` للصفحات العامة، و`403` لغياب Origin، و`413` للطلبات الأكبر من `4MiB`.
 - فحص Supabase (`fmdfueuezjhnwwchoock`): تأكيد توافق استعلام الأعمدة الصريحة لـ `anon` على `demo`, `indomito`, `alwaleed`، وتأكيد فشل `SELECT *` لـ `anon` (مما يجعل دمج PR #3 ضرورياً لإعادة توافق الإنتاج)، وتأكيد منع تصعيد الصلاحيات على `profiles` ومنع الوصول المتقاطع إلى `alwaleed`.
 
 ---
