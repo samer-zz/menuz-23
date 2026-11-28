@@ -491,6 +491,12 @@ export function PublicMenuClient({
         (payload) => {
           const incoming = payload.new as TenantNotification;
           if (new Date(incoming.expires_at).getTime() <= Date.now()) return;
+          if (
+            incoming.scheduled_for &&
+            new Date(incoming.scheduled_for).getTime() > Date.now()
+          ) {
+            return;
+          }
           setNotifications((prev) => [incoming, ...prev]);
           setUnreadCount((c) => c + 1);
           toast(`🔔 ${incoming.title}: ${incoming.body}`, "info");
@@ -742,9 +748,22 @@ export function PublicMenuClient({
         return;
       }
 
+      const urlBase64ToUint8Array = (base64String: string) => {
+        const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+        const base64 = (base64String + padding)
+          .replace(/-/g, "+")
+          .replace(/_/g, "/");
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) {
+          outputArray[i] = rawData.charCodeAt(i);
+        }
+        return outputArray;
+      };
+
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: vapidKey,
+        applicationServerKey: urlBase64ToUint8Array(vapidKey),
       });
       const json = sub.toJSON();
       if (json.endpoint && json.keys?.p256dh && json.keys?.auth) {
@@ -864,6 +883,7 @@ export function PublicMenuClient({
       setCompletedOrder({
         orderId: payload.orderId ?? null,
         orderNumber: payload.orderNumber,
+        feedbackToken: payload.feedbackToken,
         items: payload.itemsSnapshot,
         computedTotal: payload.computedTotal,
         currency: payload.currency || tenant.currency || "ر.ي",

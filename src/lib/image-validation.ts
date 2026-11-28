@@ -198,7 +198,7 @@ export async function decodeAndSanitizeImage(
 
   try {
     const pipeline = sharp(buf, {
-      failOn: "error",
+      failOn: "warning",
       limitInputPixels: MAX_IMAGE_PIXELS,
       animated: false,
     });

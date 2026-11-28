@@ -1,7 +1,6 @@
 -- ============================================================================
--- MENUZ v4 Platform Hardening, Orders, Private Super-Admin Feedback,
+-- MENUZ v4 Platform Hardening, Atomic Orders, Private Super-Admin Feedback,
 -- Dynamic Tenant Theme Colors, Web Push Subscriptions & Batch Maintenance
--- NOTE: Prepared for review — NOT applied to production without owner approval.
 -- ============================================================================
 
 -- 1. Enforce server-only uploads & 4MiB cap in menus-media Storage bucket
@@ -83,12 +82,15 @@ $$;
 revoke all on function public.update_client_tenant_appearance(text,text,text,text,text,text) from public, anon;
 grant execute on function public.update_client_tenant_appearance(text,text,text,text,text,text) to authenticated;
 
--- 3. Server-verified Orders table (prevents price tampering & duplicate submits)
+-- 3. Server-verified Orders table (prevents price tampering, duplicate submits & history loss)
 create table if not exists public.orders (
   id uuid primary key default gen_random_uuid(),
-  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  tenant_id uuid references public.tenants(id) on delete set null,
+  tenant_name_snapshot text,
   order_number text not null,
   idempotency_key text not null,
+  payload_hash text not null,
+  feedback_token_hash text,
   customer_name text,
   customer_phone text,
   order_type text not null check (order_type in ('delivery', 'pickup')),
@@ -111,37 +113,214 @@ create index if not exists idx_orders_tenant_created
 
 alter table public.orders enable row level security;
 revoke all on public.orders from public, anon, authenticated;
-grant select, update on public.orders to authenticated;
+-- Least privilege: authenticated admins can only SELECT orders; status changes go through update_tenant_order_status RPC
+grant select on public.orders to authenticated;
 
 drop policy if exists "orders_tenant_read" on public.orders;
 create policy "orders_tenant_read" on public.orders
 for select to authenticated
 using (
   public.is_super_admin()
-  or tenant_id = public.my_tenant_id()
+  or (tenant_id is not null and tenant_id = public.my_tenant_id())
 );
 
 drop policy if exists "orders_tenant_update" on public.orders;
-create policy "orders_tenant_update" on public.orders
-for update to authenticated
-using (
-  public.is_super_admin()
-  or tenant_id = public.my_tenant_id()
+
+-- Safe RPC for atomic order creation + payload conflict detection + analytics event
+create or replace function public.create_order_atomic(
+  p_tenant_id uuid,
+  p_tenant_name_snapshot text,
+  p_order_number text,
+  p_idempotency_key text,
+  p_payload_hash text,
+  p_feedback_token_hash text,
+  p_customer_name text,
+  p_customer_phone text,
+  p_order_type text,
+  p_delivery_address text,
+  p_payment_method text,
+  p_wallet_name text,
+  p_transaction_ref text,
+  p_notes text,
+  p_items_snapshot jsonb,
+  p_computed_total numeric,
+  p_currency text,
+  p_channel text,
+  p_items_count integer
 )
-with check (
-  public.is_super_admin()
-  or tenant_id = public.my_tenant_id()
-);
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_existing public.orders%rowtype;
+  v_inserted_id uuid;
+  v_inserted_number text;
+begin
+  insert into public.orders (
+    tenant_id,
+    tenant_name_snapshot,
+    order_number,
+    idempotency_key,
+    payload_hash,
+    feedback_token_hash,
+    customer_name,
+    customer_phone,
+    order_type,
+    delivery_address,
+    payment_method,
+    wallet_name,
+    transaction_ref,
+    notes,
+    items_snapshot,
+    computed_total,
+    currency,
+    channel
+  )
+  values (
+    p_tenant_id,
+    p_tenant_name_snapshot,
+    p_order_number,
+    p_idempotency_key,
+    p_payload_hash,
+    p_feedback_token_hash,
+    nullif(p_customer_name, ''),
+    nullif(p_customer_phone, ''),
+    p_order_type,
+    nullif(p_delivery_address, ''),
+    p_payment_method,
+    nullif(p_wallet_name, ''),
+    nullif(p_transaction_ref, ''),
+    nullif(p_notes, ''),
+    p_items_snapshot,
+    p_computed_total,
+    p_currency,
+    p_channel
+  )
+  on conflict (tenant_id, idempotency_key) do nothing
+  returning id, order_number into v_inserted_id, v_inserted_number;
+
+  if v_inserted_id is not null then
+    perform public.record_menu_event(
+      p_tenant_id,
+      'order_submit',
+      null,
+      jsonb_build_object(
+        'channel', case when p_channel = 'direct' then 'whatsapp' else p_channel end,
+        'total', p_computed_total,
+        'items_count', p_items_count,
+        'payment_method', p_payment_method
+      )
+    );
+
+    return jsonb_build_object(
+      'outcome', 'created',
+      'order_id', v_inserted_id,
+      'order_number', v_inserted_number,
+      'computed_total', p_computed_total,
+      'currency', p_currency,
+      'items_snapshot', p_items_snapshot
+    );
+  end if;
+
+  select * into v_existing
+  from public.orders
+  where tenant_id = p_tenant_id
+    and idempotency_key = p_idempotency_key;
+
+  if not found then
+    raise exception 'Order idempotency lookup failed';
+  end if;
+
+  if v_existing.payload_hash <> p_payload_hash then
+    return jsonb_build_object(
+      'outcome', 'conflict',
+      'order_id', v_existing.id,
+      'order_number', v_existing.order_number
+    );
+  end if;
+
+  return jsonb_build_object(
+    'outcome', 'duplicate',
+    'order_id', v_existing.id,
+    'order_number', v_existing.order_number,
+    'computed_total', v_existing.computed_total,
+    'currency', v_existing.currency,
+    'items_snapshot', v_existing.items_snapshot
+  );
+end;
+$$;
+
+revoke all on function public.create_order_atomic(uuid,text,text,text,text,text,text,text,text,text,text,text,text,text,jsonb,numeric,text,text,integer) from public, anon, authenticated;
+grant execute on function public.create_order_atomic(uuid,text,text,text,text,text,text,text,text,text,text,text,text,text,jsonb,numeric,text,text,integer) to service_role;
+
+-- Safe RPC for order status progression (prevents column tampering & invalid state jumps)
+create or replace function public.update_tenant_order_status(
+  p_order_id uuid,
+  p_new_status text
+)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.orders%rowtype;
+begin
+  if p_new_status not in ('sent', 'confirmed', 'completed', 'cancelled') then
+    raise exception 'Invalid order status';
+  end if;
+
+  select * into v_order
+  from public.orders
+  where id = p_order_id;
+
+  if not found then
+    raise exception 'Order not found';
+  end if;
+
+  if not (public.is_super_admin() or (v_order.tenant_id is not null and v_order.tenant_id = public.my_tenant_id())) then
+    raise exception 'Unauthorized order status update';
+  end if;
+
+  if v_order.status = p_new_status then
+    return v_order.status;
+  end if;
+
+  if v_order.status in ('completed', 'cancelled') then
+    raise exception 'Cannot transition terminal order status';
+  end if;
+
+  if v_order.status = 'sent' and p_new_status not in ('confirmed', 'cancelled') then
+    raise exception 'Invalid transition from sent';
+  end if;
+
+  if v_order.status = 'confirmed' and p_new_status not in ('completed', 'cancelled') then
+    raise exception 'Invalid transition from confirmed';
+  end if;
+
+  update public.orders
+  set status = p_new_status
+  where id = p_order_id;
+
+  return p_new_status;
+end;
+$$;
+
+revoke all on function public.update_tenant_order_status(uuid,text) from public, anon;
+grant execute on function public.update_tenant_order_status(uuid,text) to authenticated;
 
 -- 4. Order Experience Feedback table — STRICTLY visible to Super Admin ONLY!
---    client_admin & anon are denied at both privilege and RLS layers.
+--    One feedback per verified order; client_admin & anon are denied at both privilege and RLS layers.
 create table if not exists public.order_feedback (
   id uuid primary key default gen_random_uuid(),
-  tenant_id uuid not null references public.tenants(id) on delete cascade,
-  order_id uuid references public.orders(id) on delete set null,
+  tenant_id uuid references public.tenants(id) on delete set null,
+  order_id uuid not null references public.orders(id) on delete cascade,
   rating smallint not null check (rating between 1 and 5),
   comment text check (comment is null or char_length(comment) <= 600),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  constraint uq_order_feedback_order unique (order_id)
 );
 
 create index if not exists idx_order_feedback_created
@@ -188,6 +367,14 @@ alter table public.notifications
   add column if not exists scheduled_for timestamptz,
   add column if not exists push_sent boolean not null default false;
 
+drop policy if exists "Public reads active non-expired notifications" on public.notifications;
+create policy "Public reads active non-expired notifications" on public.notifications
+for select to anon, authenticated
+using (
+  expires_at > now()
+  and (scheduled_for is null or scheduled_for <= now())
+);
+
 -- 7. Batched, retention-safe maintenance cleanup (service_role only)
 create or replace function public.run_maintenance_cleanup(p_batch_limit integer default 1000)
 returns jsonb
@@ -201,6 +388,7 @@ declare
   v_api_rl integer := 0;
   v_login_rl integer := 0;
   v_analytics integer := 0;
+  v_push_stale integer := 0;
 begin
   with doomed as (
     select id from public.notifications
@@ -240,11 +428,23 @@ begin
   delete from public.analytics_events e using doomed where e.id = doomed.id;
   get diagnostics v_analytics = row_count;
 
+  -- Prune stale/inactive push subscriptions older than 90 days
+  with doomed as (
+    select id from public.push_subscriptions
+    where is_active = false
+      and coalesce(last_used_at, created_at) < now() - interval '90 days'
+    order by created_at asc
+    limit v_limit
+  )
+  delete from public.push_subscriptions p using doomed where p.id = doomed.id;
+  get diagnostics v_push_stale = row_count;
+
   return jsonb_build_object(
     'notifications_deleted', v_notifs,
     'api_rate_limits_deleted', v_api_rl,
     'login_rate_limits_deleted', v_login_rl,
     'analytics_events_deleted', v_analytics,
+    'push_subscriptions_deleted', v_push_stale,
     'batch_limit', v_limit
   );
 end;

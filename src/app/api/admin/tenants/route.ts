@@ -88,12 +88,12 @@ const tenantSchema = z.object({
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/, "صيغة اللون الثانوي غير صالحة")
     .default("#FF7A00"),
-  secondary_color: z
+  background_color: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/)
     .optional()
     .nullable(),
-  background_color: z
+  card_color: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/)
     .optional()
@@ -103,7 +103,7 @@ const tenantSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/)
     .optional()
     .nullable(),
-  card_color: z
+  button_text_color: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/)
     .optional()
@@ -145,16 +145,16 @@ export async function POST(request: NextRequest) {
 
   if (error && /column .* does not exist/i.test(error.message)) {
     const {
-      secondary_color: _sc,
       background_color: _bg,
       text_color: _tc,
       card_color: _cc,
+      button_text_color: _btc,
       ...legacyPayload
     } = payload;
-    void _sc;
     void _bg;
     void _tc;
     void _cc;
+    void _btc;
     const retry = await ctx.supabase
       .from("tenants")
       .insert(legacyPayload)
@@ -266,16 +266,16 @@ export async function PATCH(request: NextRequest) {
 
   if (error && /column .* does not exist/i.test(error.message)) {
     const {
-      secondary_color: _sc,
       background_color: _bg,
       text_color: _tc,
       card_color: _cc,
+      button_text_color: _btc,
       ...legacyUpdates
     } = updates;
-    void _sc;
     void _bg;
     void _tc;
     void _cc;
+    void _btc;
     const retry = await ctx.supabase
       .from("tenants")
       .update(legacyUpdates)

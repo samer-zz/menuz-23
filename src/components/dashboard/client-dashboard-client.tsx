@@ -17,6 +17,7 @@ import {
   ShoppingBag,
 } from "lucide-react";
 import { useApp } from "@/components/providers/theme-provider";
+import { createClient } from "@/lib/supabase/client";
 import { MenuzLogo } from "@/components/ui/brand-logo";
 import { TenantMenuManager } from "./tenant-menu-manager";
 import { AnalyticsCharts } from "./analytics-charts";
@@ -63,6 +64,32 @@ export function ClientDashboardClient({
   const [tab, setTab] = useState<Tab>("menu");
   const [showQr, setShowQr] = useState(false);
   const [mustChange, setMustChange] = useState(profile.must_change_password);
+  const [orderList, setOrderList] = useState<OrderRecord[]>(orders);
+  const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
+
+  const handleUpdateOrderStatus = async (
+    orderId: string,
+    newStatus: OrderRecord["status"]
+  ) => {
+    setUpdatingOrderId(orderId);
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.rpc("update_tenant_order_status", {
+        p_order_id: orderId,
+        p_new_status: newStatus,
+      });
+      if (error) {
+        toast("تعذر تحديث حالة الطلب", "error");
+        return;
+      }
+      setOrderList((prev) =>
+        prev.map((o) => (o.id === orderId ? { ...o, status: newStatus } : o))
+      );
+      toast("تم تحديث حالة الطلب بنجاح", "success");
+    } finally {
+      setUpdatingOrderId(null);
+    }
+  };
 
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -182,7 +209,7 @@ export function ClientDashboardClient({
               {(
                 [
                   { key: "menu", label: "إدارة المنيو والعروض", icon: Utensils },
-                  { key: "orders", label: `الطلبات (${orders.length})`, icon: ShoppingBag },
+                  { key: "orders", label: `الطلبات (${orderList.length})`, icon: ShoppingBag },
                   { key: "analytics", label: "إحصائيات الجهة", icon: BarChart3 },
                   { key: "security", label: "الأمان وكلمة المرور", icon: KeyRound },
                 ] as const
@@ -223,13 +250,13 @@ export function ClientDashboardClient({
                     من قاعدة البيانات لمنع التلاعب بالأسعار.
                   </span>
                 </div>
-                {orders.length === 0 ? (
+                {orderList.length === 0 ? (
                   <div className="rounded-3xl p-10 text-center glass-panel text-slate-400 text-sm">
                     لا توجد طلبات مسجلة في سجل الطلبات بعد.
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {orders.map((ord) => (
+                    {orderList.map((ord) => (
                       <div
                         key={ord.id}
                         className="rounded-2xl p-4 glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-3"
@@ -244,6 +271,15 @@ export function ClientDashboardClient({
                             </span>
                             <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-bold">
                               {ord.channel === "whatsapp" ? "واتساب" : ord.channel === "sms" ? "رسالة نصية" : "مباشر"}
+                            </span>
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-brand-orange/15 text-brand-orange font-bold">
+                              {ord.status === "sent"
+                                ? "مرسل"
+                                : ord.status === "confirmed"
+                                  ? "مؤكد"
+                                  : ord.status === "completed"
+                                    ? "مكتمل"
+                                    : "ملغي"}
                             </span>
                           </div>
                           <p className="text-sm font-bold">
@@ -261,13 +297,53 @@ export function ClientDashboardClient({
                             {formatArabicDate(ord.created_at)}
                           </p>
                         </div>
-                        <div className="text-left shrink-0">
-                          <p className="font-black text-base text-brand-orange">
-                            {formatPrice(ord.computed_total, ord.currency)}
-                          </p>
-                          <p className="text-[11px] text-slate-400">
-                            {ord.payment_method === "wallet" ? "محفظة إلكترونية" : "نقداً"}
-                          </p>
+                        <div className="flex flex-col items-end gap-2 shrink-0">
+                          <div className="text-left">
+                            <p className="font-black text-base text-brand-orange">
+                              {formatPrice(ord.computed_total, ord.currency)}
+                            </p>
+                            <p className="text-[11px] text-slate-400">
+                              {ord.payment_method === "wallet" ? "محفظة إلكترونية" : "نقداً"}
+                            </p>
+                          </div>
+                          {(ord.status === "sent" || ord.status === "confirmed") && (
+                            <div className="flex items-center gap-1.5">
+                              {ord.status === "sent" && (
+                                <button
+                                  type="button"
+                                  disabled={updatingOrderId === ord.id}
+                                  onClick={() =>
+                                    handleUpdateOrderStatus(ord.id, "confirmed")
+                                  }
+                                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-500/15 text-emerald-500 hover:bg-emerald-500/25 transition"
+                                >
+                                  تأكيد
+                                </button>
+                              )}
+                              {ord.status === "confirmed" && (
+                                <button
+                                  type="button"
+                                  disabled={updatingOrderId === ord.id}
+                                  onClick={() =>
+                                    handleUpdateOrderStatus(ord.id, "completed")
+                                  }
+                                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-500/15 text-emerald-500 hover:bg-emerald-500/25 transition"
+                                >
+                                  إكمال
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                disabled={updatingOrderId === ord.id}
+                                onClick={() =>
+                                  handleUpdateOrderStatus(ord.id, "cancelled")
+                                }
+                                className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-rose-500/15 text-rose-400 hover:bg-rose-500/25 transition"
+                              >
+                                إلغاء
+                              </button>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}

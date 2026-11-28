@@ -209,6 +209,13 @@ export default async function PublicMenuPage({
         .limit(20),
     ]);
 
+  const dueNotifications = (
+    (notifRes.data as TenantNotification[]) ?? []
+  ).filter(
+    (n) =>
+      !n.scheduled_for || new Date(n.scheduled_for).getTime() <= Date.now()
+  );
+
   return (
     <PublicMenuClient
       tenant={tenant}
@@ -216,7 +223,7 @@ export default async function PublicMenuPage({
       items={(itemsRes.data as MenuItem[]) ?? []}
       offers={(offersRes.data as Offer[]) ?? []}
       wallets={(walletsRes.data as Wallet[]) ?? []}
-      initialNotifications={(notifRes.data as TenantNotification[]) ?? []}
+      initialNotifications={dueNotifications}
     />
   );
 }

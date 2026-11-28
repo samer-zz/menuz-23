@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createAdminSupabase } from "@/lib/supabase/admin";
@@ -44,6 +45,37 @@ const orderSchema = z.object({
   notes: z.string().trim().max(400).optional().default(""),
   channel: z.enum(["whatsapp", "sms", "direct"]).default("whatsapp"),
 });
+
+function computeOrderPayloadHash(params: {
+  tenantId: string;
+  itemsSnapshot: Array<{ item_id: string; quantity: number; unit_price: number }>;
+  orderType: string;
+  deliveryAddress: string;
+  paymentMethod: string;
+  walletId: string | null;
+  transactionRef: string;
+  notes: string;
+  channel: string;
+  customerName: string;
+  customerPhone: string;
+}): string {
+  const canonical = JSON.stringify({
+    tenantId: params.tenantId,
+    items: [...params.itemsSnapshot]
+      .sort((a, b) => a.item_id.localeCompare(b.item_id))
+      .map((i) => [i.item_id, i.quantity, i.unit_price]),
+    orderType: params.orderType,
+    deliveryAddress: params.deliveryAddress,
+    paymentMethod: params.paymentMethod,
+    walletId: params.walletId,
+    transactionRef: params.transactionRef,
+    notes: params.notes,
+    channel: params.channel,
+    customerName: params.customerName,
+    customerPhone: params.customerPhone,
+  });
+  return createHash("sha256").update(canonical).digest("hex");
+}
 
 export async function POST(request: NextRequest) {
   if (!verifySameOrigin(request)) {
@@ -176,97 +208,122 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // 3. Resolve optional wallet safely for this tenant
+    // 3. Resolve and verify optional wallet belongs to THIS tenant and is active
     let walletName: string | undefined;
     let walletAccount: string | undefined;
     if (data.paymentMethod === "wallet" && data.walletId) {
-      const { data: wallet } = await admin
+      const { data: wallet, error: walletErr } = await admin
         .from("wallets")
         .select("name, account_number, is_active")
         .eq("id", data.walletId)
         .eq("tenant_id", tenant.id)
         .maybeSingle();
-      if (wallet && wallet.is_active) {
-        walletName = wallet.name;
-        walletAccount = wallet.account_number;
+
+      if (walletErr || !wallet || !wallet.is_active) {
+        return NextResponse.json(
+          { error: "المحفظة المحددة غير صالحة أو غير مفعّلة لهذه الجهة" },
+          { status: 400 }
+        );
       }
+      walletName = wallet.name;
+      walletAccount = wallet.account_number;
     }
 
     const orderNumber = `MZ-${Date.now().toString(36).toUpperCase().slice(-5)}-${data.idempotencyKey
       .slice(0, 4)
       .toUpperCase()}`;
 
-    let orderId: string | null = null;
-    let persistedOrderNumber = orderNumber;
-    let isDuplicate = false;
+    const payloadHash = computeOrderPayloadHash({
+      tenantId: tenant.id,
+      itemsSnapshot,
+      orderType: data.orderType,
+      deliveryAddress:
+        data.orderType === "delivery" ? data.deliveryAddress : "",
+      paymentMethod: data.paymentMethod,
+      walletId: data.paymentMethod === "wallet" ? data.walletId ?? null : null,
+      transactionRef:
+        data.paymentMethod === "wallet" ? data.transactionRef : "",
+      notes: data.notes,
+      channel: data.channel,
+      customerName: data.customerName,
+      customerPhone: data.customerPhone,
+    });
 
-    // 4. Persist order when migration 005 `orders` table exists (graceful fallback otherwise)
-    const { data: existingOrder, error: existingErr } = await admin
-      .from("orders")
-      .select("id, order_number, computed_total")
-      .eq("tenant_id", tenant.id)
-      .eq("idempotency_key", data.idempotencyKey)
-      .maybeSingle();
+    const feedbackToken = randomBytes(24).toString("base64url");
+    const feedbackTokenHash = createHash("sha256")
+      .update(feedbackToken)
+      .digest("hex");
 
-    if (!existingErr && existingOrder) {
-      orderId = existingOrder.id;
-      persistedOrderNumber = existingOrder.order_number;
-      isDuplicate = true;
-    } else if (!existingErr) {
-      const { data: insertedOrder, error: insertErr } = await admin
-        .from("orders")
-        .insert({
-          tenant_id: tenant.id,
-          order_number: orderNumber,
-          idempotency_key: data.idempotencyKey,
-          customer_name: data.customerName || null,
-          customer_phone: data.customerPhone || null,
-          order_type: data.orderType,
-          delivery_address:
-            data.orderType === "delivery" ? data.deliveryAddress : null,
-          payment_method: data.paymentMethod,
-          wallet_name: walletName ?? null,
-          transaction_ref:
-            data.paymentMethod === "wallet" ? data.transactionRef : null,
-          notes: data.notes || null,
-          items_snapshot: itemsSnapshot,
-          computed_total: computedTotal,
-          currency: tenant.currency || "ر.ي",
-          channel: data.channel,
-        })
-        .select("id, order_number")
-        .single();
+    const itemsCount = itemsSnapshot.reduce((a, b) => a + b.quantity, 0);
 
-      if (!insertErr && insertedOrder) {
-        orderId = insertedOrder.id;
-        persistedOrderNumber = insertedOrder.order_number;
-      }
-    }
-
-    // 5. Record analytics event once per unique order submission
-    if (!isDuplicate) {
-      await admin.rpc("record_menu_event", {
+    // 4. Atomic DB insert + idempotency conflict check + analytics event
+    const { data: atomicResult, error: atomicErr } = await admin.rpc(
+      "create_order_atomic",
+      {
         p_tenant_id: tenant.id,
-        p_event_type: "order_submit",
-        p_item_id: null,
-        p_metadata: {
-          channel: data.channel === "direct" ? "whatsapp" : data.channel,
-          total: computedTotal,
-          items_count: itemsSnapshot.reduce((a, b) => a + b.quantity, 0),
-          payment_method: data.paymentMethod,
-        },
-      });
+        p_tenant_name_snapshot: tenant.name_ar,
+        p_order_number: orderNumber,
+        p_idempotency_key: data.idempotencyKey,
+        p_payload_hash: payloadHash,
+        p_feedback_token_hash: feedbackTokenHash,
+        p_customer_name: data.customerName || "",
+        p_customer_phone: data.customerPhone || "",
+        p_order_type: data.orderType,
+        p_delivery_address:
+          data.orderType === "delivery" ? data.deliveryAddress : "",
+        p_payment_method: data.paymentMethod,
+        p_wallet_name: walletName || "",
+        p_transaction_ref:
+          data.paymentMethod === "wallet" ? data.transactionRef : "",
+        p_notes: data.notes || "",
+        p_items_snapshot: itemsSnapshot,
+        p_computed_total: computedTotal,
+        p_currency: tenant.currency || "ر.ي",
+        p_channel: data.channel,
+        p_items_count: itemsCount,
+      }
+    );
+
+    if (atomicErr || !atomicResult) {
+      return NextResponse.json(
+        { error: "تعذر توثيق الطلب في قاعدة البيانات، يرجى المحاولة مجدداً" },
+        { status: 500 }
+      );
     }
+
+    const resObj = atomicResult as {
+      outcome: "created" | "duplicate" | "conflict";
+      order_id: string;
+      order_number: string;
+      computed_total?: number;
+      currency?: string;
+      items_snapshot?: typeof itemsSnapshot;
+    };
+
+    if (resObj.outcome === "conflict") {
+      return NextResponse.json(
+        {
+          error:
+            "مفتاح الطلب مستخدم مسبقاً ببيانات مختلفة؛ يرجى إعادة إرسال الطلب",
+        },
+        { status: 409 }
+      );
+    }
+
+    const isDuplicate = resObj.outcome === "duplicate";
+    const finalTotal = Number(resObj.computed_total ?? computedTotal);
+    const finalCurrency = resObj.currency || tenant.currency || "ر.ي";
+    const finalItems = resObj.items_snapshot || itemsSnapshot;
 
     const invoiceMessage = formatInvoiceMessage({
       tenantName: tenant.name_ar,
-      currency: tenant.currency || "ر.ي",
-      items: itemsSnapshot.map((s) => ({
+      currency: finalCurrency,
+      items: finalItems.map((s) => ({
         name: s.name,
         quantity: s.quantity,
         price: s.unit_price,
       })),
-      total: computedTotal,
+      total: finalTotal,
       customerName: data.customerName || "ضيف الكريم",
       customerPhone: data.customerPhone || "غير مضاف",
       orderType: data.orderType,
@@ -280,13 +337,14 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      orderId,
-      orderNumber: persistedOrderNumber,
-      computedTotal,
-      currency: tenant.currency || "ر.ي",
-      itemsSnapshot,
+      orderId: resObj.order_id,
+      orderNumber: resObj.order_number,
+      computedTotal: finalTotal,
+      currency: finalCurrency,
+      itemsSnapshot: finalItems,
       invoiceMessage,
       duplicate: isDuplicate,
+      feedbackToken: isDuplicate ? undefined : feedbackToken,
     });
   } catch {
     return NextResponse.json(

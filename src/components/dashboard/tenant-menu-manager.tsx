@@ -15,8 +15,10 @@ import {
   Check,
   X,
   Bell,
+  Palette,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { contrastRatio, normalizeHexColor } from "@/lib/theme-colors";
 import {
   compressImageFile,
   MAX_CLIENT_IMAGE_BYTES,
@@ -114,11 +116,29 @@ export function TenantMenuManager({
   const [walletAccountName, setWalletAccountName] = useState("");
   const [walletLogo, setWalletLogo] = useState("");
 
-  // Notification Form (7-day auto expiry by default)
+  // Notification Form (7-day auto expiry by default, optional future schedule)
   const [notifTitle, setNotifTitle] = useState("");
   const [notifBody, setNotifBody] = useState("");
   const [notifDays, setNotifDays] = useState("7");
+  const [notifSchedule, setNotifSchedule] = useState("");
   const [savingNotif, setSavingNotif] = useState(false);
+
+  // Appearance Colors Form (client_admin uses update_client_tenant_appearance RPC)
+  const [primaryColor, setPrimaryColor] = useState(
+    normalizeHexColor(tenant.primary_color, "#0B2D5B")
+  );
+  const [accentColor, setAccentColor] = useState(
+    normalizeHexColor(tenant.accent_color, "#FF7A00")
+  );
+  const [backgroundColor, setBackgroundColor] = useState(
+    tenant.background_color || ""
+  );
+  const [cardColor, setCardColor] = useState(tenant.card_color || "");
+  const [textColor, setTextColor] = useState(tenant.text_color || "");
+  const [buttonTextColor, setButtonTextColor] = useState(
+    tenant.button_text_color || ""
+  );
+  const [savingAppearance, setSavingAppearance] = useState(false);
 
   // Client Settings Form (Restricted to contact/social/delivery/story)
   const [story, setStory] = useState(tenant.story || "");
@@ -384,6 +404,9 @@ export function TenantMenuManager({
     setSavingNotif(true);
     try {
       const days = Math.min(30, Math.max(1, Number(notifDays) || 7));
+      const scheduledFor = notifSchedule
+        ? new Date(notifSchedule).toISOString()
+        : null;
       const res = await fetch("/api/push/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -392,6 +415,7 @@ export function TenantMenuManager({
           title: notifTitle.trim(),
           body: notifBody.trim(),
           daysValid: days,
+          scheduledFor,
         }),
       });
       const payload = await res.json().catch(() => ({}));
@@ -403,11 +427,14 @@ export function TenantMenuManager({
       setNotifTitle("");
       setNotifBody("");
       setNotifDays("7");
+      setNotifSchedule("");
       const extra =
-        payload.pushSent > 0
-          ? ` (تم دفع التنبيه لـ ${payload.pushSent} جهاز مشترك)`
-          : "";
-      toast(`تم نشر الإشعار وسيظهر فوراً في المنيو العام${extra}!`, "success");
+        payload.pushMode === "scheduled"
+          ? " (تمت الجدولة للإرسال في الموعد المحدد)"
+          : payload.pushSent > 0
+            ? ` (تم دفع التنبيه لـ ${payload.pushSent} جهاز مشترك)`
+            : "";
+      toast(`تم حفظ الإشعار${extra}!`, "success");
     } finally {
       setSavingNotif(false);
     }
@@ -466,6 +493,49 @@ export function TenantMenuManager({
       toast("تم حفظ بيانات التواصل والتوصيل بنجاح!", "success");
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  const saveAppearance = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingAppearance(true);
+    try {
+      const cleanHex = (v: string) =>
+        /^#[0-9A-Fa-f]{6}$/.test(v.trim()) ? v.trim().toUpperCase() : null;
+
+      if (isSuperAdmin) {
+        const { data, error } = await supabase
+          .from("tenants")
+          .update({
+            primary_color: primaryColor.toUpperCase(),
+            accent_color: accentColor.toUpperCase(),
+            background_color: cleanHex(backgroundColor),
+            card_color: cleanHex(cardColor),
+            text_color: cleanHex(textColor),
+            button_text_color: cleanHex(buttonTextColor),
+          })
+          .eq("id", tenant.id)
+          .select()
+          .single();
+        if (error) return toast(error.message, "error");
+        onTenantUpdated?.(data);
+      } else {
+        const { error } = await supabase.rpc(
+          "update_client_tenant_appearance",
+          {
+            p_primary_color: primaryColor.toUpperCase(),
+            p_accent_color: accentColor.toUpperCase(),
+            p_background_color: cleanHex(backgroundColor),
+            p_card_color: cleanHex(cardColor),
+            p_text_color: cleanHex(textColor),
+            p_button_text_color: cleanHex(buttonTextColor),
+          }
+        );
+        if (error) return toast(error.message, "error");
+      }
+      toast("تم حفظ ألوان مظهر المنيو بنجاح!", "success");
+    } finally {
+      setSavingAppearance(false);
     }
   };
 
@@ -988,13 +1058,31 @@ export function TenantMenuManager({
               className="w-full rounded-xl px-3 py-2.5 text-sm bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
             />
 
-            <button
-              type="submit"
-              disabled={savingNotif}
-              className="rounded-xl px-5 py-2.5 text-sm font-bold bg-orange-gradient text-white shadow-orange-glow disabled:opacity-60"
-            >
-              {savingNotif ? "جاري الإرسال..." : "نشر الإشعار الآن"}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="font-bold text-slate-400">
+                  جدولة لاحقة (اختياري):
+                </span>
+                <input
+                  type="datetime-local"
+                  value={notifSchedule}
+                  onChange={(e) => setNotifSchedule(e.target.value)}
+                  className="rounded-xl px-3 py-2 text-xs bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={savingNotif}
+                className="rounded-xl px-5 py-2.5 text-sm font-bold bg-orange-gradient text-white shadow-orange-glow disabled:opacity-60"
+              >
+                {savingNotif
+                  ? "جاري الإرسال..."
+                  : notifSchedule
+                    ? "جدولة الإشعار"
+                    : "نشر الإشعار الآن"}
+              </button>
+            </div>
           </form>
 
           {notifications.length === 0 ? (
@@ -1140,9 +1228,10 @@ export function TenantMenuManager({
 
       {/* SETTINGS TAB */}
       {subTab === "settings" && (
+        <div className="space-y-6 max-w-3xl">
         <form
           onSubmit={saveClientSettings}
-          className="rounded-3xl p-6 glass-panel space-y-4 max-w-3xl"
+          className="rounded-3xl p-6 glass-panel space-y-4"
         >
           <div className="space-y-1">
             <h3 className="font-extrabold text-lg">
@@ -1256,6 +1345,131 @@ export function TenantMenuManager({
             {savingSettings ? "جاري الحفظ..." : "حفظ الإعدادات"}
           </button>
         </form>
+
+        {/* APPEARANCE COLORS CUSTOMIZATION */}
+        <form
+          onSubmit={saveAppearance}
+          className="rounded-3xl p-6 glass-panel space-y-4"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="font-extrabold text-base flex items-center gap-2">
+                <Palette className="w-4 h-4 text-brand-orange" />
+                <span>ألوان مظهر المنيو وهوية العلامة</span>
+              </h3>
+              <p className="text-xs text-slate-400">
+                تتحكم هذه الألوان بمظهر المنيو العام مع حماية تلقائية لتباين
+                القراءة WCAG.
+              </p>
+            </div>
+            {(() => {
+              const btnBg = normalizeHexColor(accentColor, "#FF7A00");
+              const btnFg = /^#[0-9A-Fa-f]{6}$/.test(buttonTextColor.trim())
+                ? buttonTextColor.trim().toUpperCase()
+                : "#FFFFFF";
+              const ratio = contrastRatio(btnBg, btnFg);
+              return (
+                <span
+                  className={cn(
+                    "text-[11px] font-bold px-3 py-1 rounded-full",
+                    ratio >= 4.5
+                      ? "bg-emerald-500/15 text-emerald-500"
+                      : "bg-amber-500/15 text-amber-500"
+                  )}
+                >
+                  تباين الزر: {ratio.toFixed(1)}:1{" "}
+                  {ratio >= 4.5 ? "✓ مريح" : "— يُضبط تلقائياً"}
+                </span>
+              );
+            })()}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-1">
+              <label className="text-xs font-bold">اللون الأساسي</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={primaryColor}
+                  onChange={(e) => setPrimaryColor(e.target.value.toUpperCase())}
+                  className="w-10 h-10 rounded-lg cursor-pointer bg-transparent"
+                />
+                <input
+                  dir="ltr"
+                  value={primaryColor}
+                  onChange={(e) => setPrimaryColor(e.target.value)}
+                  className="flex-1 rounded-xl px-3 py-2 text-xs font-mono bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold">اللون المميز (الأزرار)</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={accentColor}
+                  onChange={(e) => setAccentColor(e.target.value.toUpperCase())}
+                  className="w-10 h-10 rounded-lg cursor-pointer bg-transparent"
+                />
+                <input
+                  dir="ltr"
+                  value={accentColor}
+                  onChange={(e) => setAccentColor(e.target.value)}
+                  className="flex-1 rounded-xl px-3 py-2 text-xs font-mono bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold">خلفية المنيو (اختياري)</label>
+              <input
+                dir="ltr"
+                value={backgroundColor}
+                onChange={(e) => setBackgroundColor(e.target.value)}
+                placeholder="#0B1324 أو فارغ للتلقائي"
+                className="w-full rounded-xl px-3 py-2.5 text-xs font-mono bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold">خلفية البطاقات (اختياري)</label>
+              <input
+                dir="ltr"
+                value={cardColor}
+                onChange={(e) => setCardColor(e.target.value)}
+                placeholder="#111C33 أو فارغ للتلقائي"
+                className="w-full rounded-xl px-3 py-2.5 text-xs font-mono bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold">لون النصوص (اختياري)</label>
+              <input
+                dir="ltr"
+                value={textColor}
+                onChange={(e) => setTextColor(e.target.value)}
+                placeholder="#FFFFFF أو فارغ للتلقائي"
+                className="w-full rounded-xl px-3 py-2.5 text-xs font-mono bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold">نص الأزرار (اختياري)</label>
+              <input
+                dir="ltr"
+                value={buttonTextColor}
+                onChange={(e) => setButtonTextColor(e.target.value)}
+                placeholder="#FFFFFF أو فارغ للتلقائي"
+                className="w-full rounded-xl px-3 py-2.5 text-xs font-mono bg-slate-100 dark:bg-navy-900 border border-navy-700/15 dark:border-white/15"
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={savingAppearance}
+            className="rounded-xl px-6 py-2.5 text-sm font-bold bg-orange-gradient text-white shadow-orange-glow disabled:opacity-60"
+          >
+            {savingAppearance ? "جاري الحفظ..." : "حفظ ألوان المظهر"}
+          </button>
+        </form>
+        </div>
       )}
     </div>
   );

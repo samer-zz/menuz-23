@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { createServerSupabase } from "@/lib/supabase/server";
+import { validateImageBuffer } from "@/lib/image-validation";
 import { isAllowedStorageMediaUrl } from "@/lib/security";
 
 export const dynamic = "force-dynamic";
@@ -65,9 +66,15 @@ export async function GET(
   }
 
   try {
+    if (sourceBuffer) {
+      const validLogo = validateImageBuffer(sourceBuffer);
+      if (!validLogo.valid) {
+        sourceBuffer = null;
+      }
+    }
     const input = sourceBuffer || (await readFallbackIcon(size));
     const pngBuffer = await sharp(input, {
-      failOn: "error",
+      failOn: "warning",
       limitInputPixels: 25_000_000,
     })
       .resize(size, size, {

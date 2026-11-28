@@ -16,6 +16,7 @@ import type { ResolvedTenantTheme } from "@/lib/theme-colors";
 export interface CompletedOrderSummary {
   orderId: string | null;
   orderNumber: string;
+  feedbackToken?: string;
   items: Array<{
     name: string;
     quantity: number;
@@ -59,7 +60,9 @@ export function ThankYouFeedbackModal({
   const [feedbackSent, setFeedbackSent] = useState(false);
 
   const submitFeedback = async () => {
-    if (!rating || sendingFeedback) return;
+    if (!rating || sendingFeedback || !summary.orderId || !summary.feedbackToken) {
+      return;
+    }
     setSendingFeedback(true);
     try {
       const res = await fetch("/api/feedback", {
@@ -68,15 +71,17 @@ export function ThankYouFeedbackModal({
         body: JSON.stringify({
           tenantId,
           orderId: summary.orderId,
+          feedbackToken: summary.feedbackToken,
           rating,
           comment: comment.trim(),
         }),
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setFeedbackSent(true);
         onToast("شكراً لمشاركتنا رأيك!", "success");
       } else {
-        onToast("تعذر إرسال التقييم حالياً", "error");
+        onToast(data.error || "تعذر إرسال التقييم حالياً", "error");
       }
     } catch {
       onToast("تعذر الاتصال لإرسال التقييم", "error");
@@ -193,6 +198,7 @@ export function ThankYouFeedbackModal({
         </div>
 
         {/* Optional Experience Rating (Admin-only, never shown to tenant) */}
+        {summary.orderId && summary.feedbackToken && (
         <div
           className="rounded-2xl p-4 border space-y-3"
           style={{
@@ -268,6 +274,7 @@ export function ThankYouFeedbackModal({
             </>
           )}
         </div>
+        )}
 
         <button
           type="button"

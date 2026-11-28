@@ -8,12 +8,14 @@ import {
   verifySameOrigin,
   writeAuditLog,
 } from "@/lib/security";
+import { dispatchTenantWebPush } from "@/lib/web-push-dispatch";
 
 const sendNotificationSchema = z.object({
   tenantId: z.string().uuid(),
   title: z.string().trim().min(2, "عنوان الإشعار مطلوب").max(120),
   body: z.string().trim().min(2, "نص الإشعار مطلوب").max(400),
   daysValid: z.number().int().min(1).max(30).default(7),
+  scheduledFor: z.string().datetime().optional().nullable(),
 });
 
 export async function POST(request: NextRequest) {
@@ -66,7 +68,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { tenantId, title, body, daysValid } = parsed.data;
+  const { tenantId, title, body, daysValid, scheduledFor } = parsed.data;
   if (profile.role !== "super_admin" && profile.tenant_id !== tenantId) {
     return NextResponse.json(
       { error: "غير مصرح بإرسال إشعارات لجهة أخرى" },
@@ -74,19 +76,50 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const nowMs = Date.now();
+  let scheduledIso: string | null = null;
+  let isFutureScheduled = false;
+
+  if (scheduledFor) {
+    const scheduledMs = new Date(scheduledFor).getTime();
+    if (!Number.isFinite(scheduledMs)) {
+      return NextResponse.json(
+        { error: "تاريخ الجدولة غير صالح" },
+        { status: 400 }
+      );
+    }
+    if (scheduledMs > nowMs + 30 * 24 * 60 * 60 * 1000) {
+      return NextResponse.json(
+        { error: "لا يمكن جدولة الإشعار لأكثر من 30 يوماً مقدماً" },
+        { status: 400 }
+      );
+    }
+    if (scheduledMs > nowMs + 60 * 1000) {
+      scheduledIso = new Date(scheduledMs).toISOString();
+      isFutureScheduled = true;
+    }
+  }
+
+  const baseMs = scheduledIso ? new Date(scheduledIso).getTime() : nowMs;
   const expiresAt = new Date(
-    Date.now() + daysValid * 24 * 60 * 60 * 1000
+    baseMs + daysValid * 24 * 60 * 60 * 1000
   ).toISOString();
 
   // Save In-App Notification using authenticated user context (respects RLS)
+  const insertPayload: Record<string, unknown> = {
+    tenant_id: tenantId,
+    title,
+    body,
+    expires_at: expiresAt,
+  };
+  if (scheduledIso) {
+    insertPayload.scheduled_for = scheduledIso;
+    insertPayload.push_sent = false;
+  }
+
   const { data: notification, error: insertErr } = await supabase
     .from("notifications")
-    .insert({
-      tenant_id: tenantId,
-      title,
-      body,
-      expires_at: expiresAt,
-    })
+    .insert(insertPayload)
     .select()
     .single();
 
@@ -97,87 +130,49 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let pushSent = 0;
-  let pushCleaned = 0;
-  let pushMode: "in_app_only" | "web_push_sent" | "vapid_not_configured" =
-    "in_app_only";
+  let pushResult = {
+    pushMode: "in_app_only" as
+      | "in_app_only"
+      | "web_push_sent"
+      | "vapid_not_configured"
+      | "scheduled",
+    pushTargeted: 0,
+    pushSent: 0,
+    pushFailed: 0,
+    pushCleaned: 0,
+  };
 
-  try {
-    const admin = createAdminSupabase();
-    const { data: tenant } = await admin
-      .from("tenants")
-      .select("slug, name_ar")
-      .eq("id", tenantId)
-      .maybeSingle();
+  if (isFutureScheduled) {
+    pushResult.pushMode = "scheduled";
+  } else {
+    try {
+      const admin = createAdminSupabase();
+      const { data: tenant } = await admin
+        .from("tenants")
+        .select("slug, name_ar")
+        .eq("id", tenantId)
+        .maybeSingle();
 
-    const { data: subs, error: subsErr } = await admin
-      .from("push_subscriptions")
-      .select("id, endpoint, p256dh, auth")
-      .eq("tenant_id", tenantId)
-      .eq("is_active", true)
-      .limit(500);
+      const dispatch = await dispatchTenantWebPush({
+        admin,
+        tenantId,
+        tenantSlug: tenant?.slug,
+        tenantName: tenant?.name_ar,
+        title,
+        body,
+      });
 
-    if (!subsErr && subs && subs.length > 0) {
-      const vapidPublic = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-      const vapidPrivate = process.env.VAPID_PRIVATE_KEY;
+      pushResult = dispatch;
 
-      if (!vapidPublic || !vapidPrivate) {
-        pushMode = "vapid_not_configured";
-      } else {
-        // Optional open-source web-push delivery when installed & VAPID keys are configured
-        const webPush = await import("web-push").catch(() => null);
-        if (webPush?.default) {
-          webPush.default.setVapidDetails(
-            process.env.VAPID_SUBJECT || "mailto:admin@menuz.app",
-            vapidPublic,
-            vapidPrivate
-          );
-          const payload = JSON.stringify({
-            title: `${tenant?.name_ar || "مينوز"} — ${title}`,
-            body,
-            icon: tenant?.slug
-              ? `/api/manifest/${tenant.slug}/icon?size=192`
-              : "/icons/icon-192.png",
-            url: tenant?.slug ? `/m/${tenant.slug}` : "/",
-          });
-
-          const staleIds: string[] = [];
-          await Promise.all(
-            subs.map(async (sub) => {
-              try {
-                await webPush.default.sendNotification(
-                  {
-                    endpoint: sub.endpoint,
-                    keys: { p256dh: sub.p256dh, auth: sub.auth },
-                  },
-                  payload
-                );
-                pushSent += 1;
-              } catch (err: unknown) {
-                const statusCode =
-                  typeof err === "object" && err !== null && "statusCode" in err
-                    ? Number((err as { statusCode: number }).statusCode)
-                    : 0;
-                if (statusCode === 404 || statusCode === 410) {
-                  staleIds.push(sub.id);
-                }
-              }
-            })
-          );
-
-          if (staleIds.length > 0) {
-            await admin
-              .from("push_subscriptions")
-              .delete()
-              .in("id", staleIds);
-            pushCleaned = staleIds.length;
-          }
-          pushMode = "web_push_sent";
-        }
+      if (dispatch.pushMode === "web_push_sent" || dispatch.pushTargeted === 0) {
+        await admin
+          .from("notifications")
+          .update({ push_sent: true })
+          .eq("id", notification.id);
       }
+    } catch {
+      // Non-fatal: In-App realtime notification succeeded already
     }
-  } catch {
-    // Non-fatal: In-App realtime notification succeeded already
   }
 
   await writeAuditLog({
@@ -186,14 +181,16 @@ export async function POST(request: NextRequest) {
     action: "send_tenant_notification",
     targetType: "notification",
     targetId: notification.id,
-    details: { tenant_id: tenantId, pushMode, pushSent, pushCleaned },
+    details: {
+      tenant_id: tenantId,
+      scheduled_for: scheduledIso,
+      ...pushResult,
+    },
   });
 
   return NextResponse.json({
     ok: true,
     notification,
-    pushMode,
-    pushSent,
-    pushCleaned,
+    ...pushResult,
   });
 }
