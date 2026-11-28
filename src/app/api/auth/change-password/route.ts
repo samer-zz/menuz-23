@@ -3,7 +3,13 @@ import { z } from "zod";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { createAdminSupabase } from "@/lib/supabase/admin";
 import { validateStrongPassword } from "@/lib/utils";
-import { verifySameOrigin, writeAuditLog } from "@/lib/security";
+import {
+  buildRateLimitKey,
+  enforceRateLimit,
+  getRateLimitIdentifier,
+  verifySameOrigin,
+  writeAuditLog,
+} from "@/lib/security";
 
 const schema = z.object({
   newPassword: z.string().min(8).max(128),
@@ -14,6 +20,25 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "طلب غير مصرح به" }, { status: 403 });
   }
 
+  const ident = getRateLimitIdentifier(request);
+  const ipRl = await enforceRateLimit(
+    buildRateLimitKey("pwchange-ip", ident),
+    15,
+    900
+  );
+  if (ipRl.status === "rate_limited") {
+    return NextResponse.json(
+      { error: "تم تجاوز حد محاولات تغيير كلمة المرور، يرجى الانتظار" },
+      { status: 429 }
+    );
+  }
+  if (ipRl.status === "unavailable") {
+    return NextResponse.json(
+      { error: "خدمة التحقق الأمني غير متاحة مؤقتاً" },
+      { status: 503 }
+    );
+  }
+
   const supabase = await createServerSupabase();
   const {
     data: { user },
@@ -21,6 +46,24 @@ export async function POST(request: NextRequest) {
 
   if (!user) {
     return NextResponse.json({ error: "يجب تسجيل الدخول أولاً" }, { status: 401 });
+  }
+
+  const userRl = await enforceRateLimit(
+    buildRateLimitKey("pwchange-user", user.id),
+    5,
+    900
+  );
+  if (userRl.status === "rate_limited") {
+    return NextResponse.json(
+      { error: "تم تجاوز حد تغيير كلمة المرور للحساب مؤقتاً" },
+      { status: 429 }
+    );
+  }
+  if (userRl.status === "unavailable") {
+    return NextResponse.json(
+      { error: "خدمة التحقق الأمني غير متاحة مؤقتاً" },
+      { status: 503 }
+    );
   }
 
   let body: unknown;

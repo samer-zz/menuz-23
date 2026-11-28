@@ -4,7 +4,7 @@ import { createAdminSupabase } from "@/lib/supabase/admin";
 import {
   buildRateLimitKey,
   enforceRateLimit,
-  getClientIp,
+  getRateLimitIdentifier,
   verifySameOrigin,
 } from "@/lib/security";
 
@@ -36,9 +36,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "بيانات غير صالحة" }, { status: 400 });
   }
 
-  const ip = getClientIp(request);
+  const ident = getRateLimitIdentifier(request);
   const rl = await enforceRateLimit(
-    buildRateLimitKey("analytics", ip),
+    buildRateLimitKey("analytics", ident),
     60,
     60
   );

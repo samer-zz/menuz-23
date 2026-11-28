@@ -4,7 +4,7 @@ import { createAdminSupabase } from "@/lib/supabase/admin";
 import {
   buildRateLimitKey,
   enforceRateLimit,
-  getClientIp,
+  getRateLimitIdentifier,
   verifySameOrigin,
 } from "@/lib/security";
 
@@ -55,8 +55,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
-  const ip = getClientIp(request);
-  const rl = await enforceRateLimit(buildRateLimitKey("contact", ip), 5, 900);
+  const ident = getRateLimitIdentifier(request);
+  const rl = await enforceRateLimit(buildRateLimitKey("contact", ident), 5, 900);
   if (rl.status === "rate_limited") {
     return NextResponse.json(
       { error: "تم تجاوز الحد المسموح للإرسال، يرجى المحاولة بعد 15 دقيقة" },

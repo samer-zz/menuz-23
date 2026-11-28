@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const isProd = process.env.NODE_ENV === "production";
 
-const cspHeader = [
+const cspDirectives = [
   "default-src 'self'",
   isProd
     ? "script-src 'self' 'unsafe-inline'"
@@ -17,7 +17,10 @@ const cspHeader = [
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
-].join("; ");
+  ...(isProd ? ["upgrade-insecure-requests"] : []),
+];
+
+const cspHeader = cspDirectives.join("; ");
 
 const nextConfig: NextConfig = {
   images: {
@@ -47,10 +50,11 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "X-XSS-Protection", value: "1; mode=block" },
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Resource-Policy", value: "same-site" },
           {
             key: "Permissions-Policy",
-            value: "camera=(), microphone=(), geolocation=()",
+            value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
           },
         ],
       },

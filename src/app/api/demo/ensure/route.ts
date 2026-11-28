@@ -4,7 +4,7 @@ import { createAdminSupabase } from "@/lib/supabase/admin";
 import {
   buildRateLimitKey,
   enforceRateLimit,
-  getClientIp,
+  getRateLimitIdentifier,
   verifySameOrigin,
   writeAuditLog,
 } from "@/lib/security";
@@ -14,8 +14,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "طلب غير مصرح به" }, { status: 403 });
   }
 
-  const ip = getClientIp(request);
-  const rl = await enforceRateLimit(buildRateLimitKey("demo", ip), 20, 60);
+  const ident = getRateLimitIdentifier(request);
+  const rl = await enforceRateLimit(buildRateLimitKey("demo", ident), 20, 60);
   if (rl.status === "rate_limited") {
     return NextResponse.json(
       { error: "يرجى الانتظار قليلاً قبل إعادة المحاولة" },

@@ -4,7 +4,7 @@ import { createServerSupabase } from "@/lib/supabase/server";
 import { createAdminSupabase } from "@/lib/supabase/admin";
 import {
   buildRateLimitKey,
-  getClientIp,
+  getRateLimitIdentifier,
   verifySameOrigin,
 } from "@/lib/security";
 
@@ -37,8 +37,8 @@ export async function POST(request: NextRequest) {
   }
 
   const email = parsed.data.email.toLowerCase();
-  const ip = getClientIp(request);
-  const rateKey = buildRateLimitKey("login", `${ip}:${email}`);
+  const ident = getRateLimitIdentifier(request);
+  const rateKey = buildRateLimitKey("login", `${ident}:${email}`);
 
   let admin: ReturnType<typeof createAdminSupabase>;
   let rateRow: {

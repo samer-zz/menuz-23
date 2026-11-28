@@ -180,11 +180,41 @@ test("IP Extraction & Anti-Spoofing: prefers Vercel header, validates IPv4/IPv6,
   assert.equal(security.normalizeIp("[2001:db8::1]:443"), "2001:db8::1");
   assert.equal(security.normalizeIp("not-an-ip-at-all"), null);
 
+  // Missing IP headers do NOT collapse into a single "unknown" key across distinct clients
+  const noIpA = security.getRateLimitIdentifier(
+    makeMockRequest({ "user-agent": "Safari/iOS", "accept-language": "ar-YE" })
+  );
+  const noIpB = security.getRateLimitIdentifier(
+    makeMockRequest({ "user-agent": "Chrome/Android", "accept-language": "en-US" })
+  );
+  assert.ok(noIpA.startsWith("fp:"));
+  assert.ok(noIpB.startsWith("fp:"));
+  assert.notEqual(noIpA, noIpB);
+
   const keyA = security.buildRateLimitKey("contact", "a".repeat(500));
   const keyB = security.buildRateLimitKey("contact", "b".repeat(500));
   assert.ok(keyA.startsWith("contact:"));
   assert.equal(keyA.length, "contact:".length + 32);
   assert.notEqual(keyA, keyB);
+});
+
+test("SSRF Guard: allows only local relative paths or menus-media Supabase storage URLs", () => {
+  const security = loadTsModule("src/lib/security.ts", {
+    "@/lib/supabase/admin": { createAdminSupabase: () => ({}) },
+  });
+
+  assert.equal(security.isAllowedStorageMediaUrl("/branding/menuz1_logo.png"), true);
+  assert.equal(
+    security.isAllowedStorageMediaUrl("https://fmdfueuezjhnwwchoock.supabase.co/storage/v1/object/public/menus-media/demo/logo.webp"),
+    true
+  );
+  assert.equal(security.isAllowedStorageMediaUrl("http://169.254.169.254/latest/meta-data"), false);
+  assert.equal(security.isAllowedStorageMediaUrl("https://evil.example/logo.png"), false);
+  assert.equal(security.isAllowedStorageMediaUrl("//evil.example/logo.png"), false);
+  assert.equal(
+    security.isAllowedStorageMediaUrl("https://fmdfueuezjhnwwchoock.supabase.co/storage/v1/object/public/menus-media/../secret/a.png"),
+    false
+  );
 });
 
 test("CSRF / Origin Validation: rejects missing Origin+Referer, evil Origin, and cross-site fetch", () => {
@@ -334,6 +364,27 @@ test("Upload Route (/api/media/upload): pre-auth IP limit, 401, 403 tenant isola
           return { status: "allowed", allowed: true };
         },
       },
+      "@/lib/supabase/admin": {
+        createAdminSupabase: () => ({
+          storage: {
+            from: () => ({
+              upload: async (objPath, buf, opts) => {
+                uploadedObjects.push({ objPath, size: buf.length, opts });
+                return { error: options.storageErr ?? null };
+              },
+              remove: async (paths) => {
+                options.removedPaths?.push(...paths);
+                return { error: null };
+              },
+              getPublicUrl: (objPath) => ({
+                data: {
+                  publicUrl: `https://example.supabase.co/storage/v1/object/public/menus-media/${objPath}`,
+                },
+              }),
+            }),
+          },
+        }),
+      },
       "@/lib/supabase/server": {
         createServerSupabase: async () => ({
           auth: {
@@ -366,23 +417,13 @@ test("Upload Route (/api/media/upload): pre-auth IP limit, 401, 403 tenant isola
             }
             throw new Error(`Unexpected table ${table}`);
           },
-          storage: {
-            from: () => ({
-              upload: async (objPath, buf, opts) => {
-                uploadedObjects.push({ objPath, size: buf.length, opts });
-                return { error: options.storageErr ?? null };
-              },
-              getPublicUrl: (objPath) => ({
-                data: { publicUrl: `https://example.supabase.co/storage/v1/object/public/menus-media/${objPath}` },
-              }),
-            }),
-          },
         }),
       },
     });
 
     return {
       POST: handlerMod.POST,
+      DELETE: handlerMod.DELETE,
       getCounts: () => ({ authCalls, profileCalls, uploadedObjects }),
     };
   }
@@ -507,6 +548,56 @@ test("Upload Route (/api/media/upload): pre-auth IP limit, 401, 403 tenant isola
     assert.equal(getCounts().uploadedObjects.length, 1);
     assert.ok(getCounts().uploadedObjects[0].objPath.startsWith(`${TENANT_A}/item-`));
     assert.equal(getCounts().uploadedObjects[0].opts.contentType, "image/webp");
+  }
+
+  // Case 9: DELETE /api/media/upload enforces tenant isolation & blocks traversal
+  {
+    const removedPaths = [];
+    const { DELETE } = makeUploadHandler({
+      user: { id: "user-1" },
+      profile: { role: "client_admin", tenant_id: TENANT_A },
+      removedPaths,
+    });
+
+    const delCross = await DELETE(
+      new Request("https://menuz-23.vercel.app/api/media/upload", {
+        method: "DELETE",
+        headers: {
+          host: "menuz-23.vercel.app",
+          origin: "https://menuz-23.vercel.app",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ path: `${TENANT_B}/item-123.webp` }),
+      })
+    );
+    assert.equal(delCross.status, 403);
+
+    const delTraversal = await DELETE(
+      new Request("https://menuz-23.vercel.app/api/media/upload", {
+        method: "DELETE",
+        headers: {
+          host: "menuz-23.vercel.app",
+          origin: "https://menuz-23.vercel.app",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ path: `${TENANT_A}/../${TENANT_B}/item-123.webp` }),
+      })
+    );
+    assert.equal(delTraversal.status, 400);
+
+    const delOwn = await DELETE(
+      new Request("https://menuz-23.vercel.app/api/media/upload", {
+        method: "DELETE",
+        headers: {
+          host: "menuz-23.vercel.app",
+          origin: "https://menuz-23.vercel.app",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ path: `${TENANT_A}/item-123.webp` }),
+      })
+    );
+    assert.equal(delOwn.status, 200);
+    assert.deepEqual(removedPaths, [`${TENANT_A}/item-123.webp`]);
   }
 });
 

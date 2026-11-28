@@ -132,6 +132,53 @@ export function getClientIp(request: NextRequest): string {
   return "unknown";
 }
 
+/**
+ * Returns a rate-limit identifier that avoids collapsing all requests without
+ * proxy IP headers into a single shared "unknown" bucket.
+ */
+export function getRateLimitIdentifier(request: NextRequest): string {
+  const ip = getClientIp(request);
+  if (ip !== "unknown") {
+    return `ip:${ip}`;
+  }
+
+  const ua = request.headers.get("user-agent") || "";
+  const lang = request.headers.get("accept-language") || "";
+  const chUa = request.headers.get("sec-ch-ua") || "";
+  const host = request.headers.get("host") || "";
+  const fingerprint = `${ua}|${lang}|${chUa}|${host}`.trim();
+  const digest = createHash("sha256")
+    .update(fingerprint || "no-headers")
+    .digest("hex")
+    .slice(0, 24);
+  return `fp:${digest}`;
+}
+
+export function isAllowedStorageMediaUrl(rawUrl: string | null | undefined): boolean {
+  if (!rawUrl) return false;
+  const trimmed = rawUrl.trim();
+  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
+    return !trimmed.includes("..");
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:") return false;
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    if (supabaseUrl) {
+      const expectedHost = new URL(supabaseUrl).host.toLowerCase();
+      if (parsed.host.toLowerCase() !== expectedHost) return false;
+    } else if (!parsed.host.toLowerCase().endsWith(".supabase.co")) {
+      return false;
+    }
+    if (!parsed.pathname.startsWith("/storage/v1/object/public/menus-media/")) {
+      return false;
+    }
+    return !parsed.pathname.includes("..");
+  } catch {
+    return false;
+  }
+}
+
 export function buildRateLimitKey(scope: string, identifier: string): string {
   const cleanScope = scope.replace(/[^a-z0-9_-]/gi, "").slice(0, 24) || "rl";
   const digest = createHash("sha256")

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabase } from "@/lib/supabase/server";
+import { createAdminSupabase } from "@/lib/supabase/admin";
 import {
   decodeAndSanitizeImage,
   MAX_IMAGE_UPLOAD_BYTES,
@@ -7,8 +8,9 @@ import {
 import {
   buildRateLimitKey,
   enforceRateLimit,
-  getClientIp,
+  getRateLimitIdentifier,
   verifySameOrigin,
+  writeAuditLog,
 } from "@/lib/security";
 
 const ALLOWED_FOLDERS = new Set(["item", "wallet", "logo", "cover"]);
@@ -36,10 +38,10 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // 1. Pre-auth IP rate limit to protect Supabase Auth & profiles from abuse
-  const ip = getClientIp(request);
+  // 1. Pre-auth rate limit using anti-spoofing IP/fingerprint identifier
+  const clientIdent = getRateLimitIdentifier(request);
   const ipRl = await enforceRateLimit(
-    buildRateLimitKey("upload-ip", ip),
+    buildRateLimitKey("upload-ip", clientIdent),
     40,
     600
   );
@@ -59,6 +61,7 @@ export async function POST(request: NextRequest) {
   // 2. Authenticate user session
   let supabase: Awaited<ReturnType<typeof createServerSupabase>>;
   let userId: string;
+  let userEmail: string | null = null;
 
   try {
     supabase = await createServerSupabase();
@@ -73,6 +76,7 @@ export async function POST(request: NextRequest) {
       );
     }
     userId = user.id;
+    userEmail = user.email ?? null;
   } catch {
     return NextResponse.json(
       { error: "خدمة التحقق من الهوية غير متاحة مؤقتاً" },
@@ -201,29 +205,150 @@ export async function POST(request: NextRequest) {
     .toString(36)
     .slice(2, 8)}.${sanitized.ext}`;
 
-  // Upload using the user's authenticated Supabase session so Storage RLS stays enforced
-  const { error: uploadErr } = await supabase.storage
-    .from("menus-media")
-    .upload(objectPath, sanitized.buffer, {
-      contentType: sanitized.mime,
-      upsert: false,
+  // Upload from server ONLY after all auth, tenant-ownership, rate-limit, and sharp checks pass.
+  // Service Role remains strictly server-side, allowing Storage to block direct client uploads.
+  try {
+    const admin = createAdminSupabase();
+    const { error: uploadErr } = await admin.storage
+      .from("menus-media")
+      .upload(objectPath, sanitized.buffer, {
+        contentType: sanitized.mime,
+        upsert: false,
+      });
+
+    if (uploadErr) {
+      return NextResponse.json(
+        { error: "تعذر حفظ الصورة، يرجى المحاولة لاحقاً" },
+        { status: 400 }
+      );
+    }
+
+    const { data: urlData } = admin.storage
+      .from("menus-media")
+      .getPublicUrl(objectPath);
+
+    await writeAuditLog({
+      actorId: userId,
+      actorEmail: userEmail,
+      action: "media_upload",
+      targetType: "storage_object",
+      targetId: objectPath,
+      details: {
+        folder,
+        tenantFolder: baseFolder,
+        bytes: sanitized.buffer.length,
+        width: sanitized.width,
+        height: sanitized.height,
+      },
     });
 
-  if (uploadErr) {
+    return NextResponse.json({
+      ok: true,
+      url: urlData.publicUrl,
+      path: objectPath,
+      width: sanitized.width,
+      height: sanitized.height,
+    });
+  } catch {
     return NextResponse.json(
-      { error: "تعذر حفظ الصورة، يرجى المحاولة لاحقاً" },
-      { status: 400 }
+      { error: "خدمة التخزين غير متاحة مؤقتاً" },
+      { status: 503 }
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "طلب غير مصرح به" }, { status: 403 });
+  }
+
+  const clientIdent = getRateLimitIdentifier(request);
+  const ipRl = await enforceRateLimit(
+    buildRateLimitKey("media-del-ip", clientIdent),
+    30,
+    600
+  );
+  if (ipRl.status === "rate_limited") {
+    return NextResponse.json(
+      { error: "تم تجاوز حد الطلبات مؤقتاً" },
+      { status: 429 }
+    );
+  }
+  if (ipRl.status === "unavailable") {
+    return NextResponse.json(
+      { error: "خدمة التحقق الأمني غير متاحة مؤقتاً" },
+      { status: 503 }
     );
   }
 
-  const { data: urlData } = supabase.storage
-    .from("menus-media")
-    .getPublicUrl(objectPath);
+  let supabase: Awaited<ReturnType<typeof createServerSupabase>>;
+  let userId: string;
+  let userEmail: string | null = null;
+  try {
+    supabase = await createServerSupabase();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: "يجب تسجيل الدخول أولاً" },
+        { status: 401 }
+      );
+    }
+    userId = user.id;
+    userEmail = user.email ?? null;
+  } catch {
+    return NextResponse.json(
+      { error: "خدمة التحقق من الهوية غير متاحة مؤقتاً" },
+      { status: 503 }
+    );
+  }
 
-  return NextResponse.json({
-    ok: true,
-    url: urlData.publicUrl,
-    width: sanitized.width,
-    height: sanitized.height,
-  });
+  const body = await request.json().catch(() => null);
+  const rawPath = String(body?.path || "").trim();
+  if (!rawPath || rawPath.includes("..") || rawPath.startsWith("/") || rawPath.length > 300) {
+    return NextResponse.json({ error: "مسار الملف غير صالح" }, { status: 400 });
+  }
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role, tenant_id")
+    .eq("id", userId)
+    .single();
+
+  if (!profile) {
+    return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
+  }
+
+  if (profile.role === "client_admin") {
+    if (!profile.tenant_id || !rawPath.startsWith(`${profile.tenant_id}/`)) {
+      return NextResponse.json(
+        { error: "غير مصرح بحذف ملفات جهة أخرى" },
+        { status: 403 }
+      );
+    }
+  } else if (profile.role !== "super_admin") {
+    return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
+  }
+
+  try {
+    const admin = createAdminSupabase();
+    const { error } = await admin.storage.from("menus-media").remove([rawPath]);
+    if (error) {
+      return NextResponse.json({ error: "تعذر حذف الملف" }, { status: 400 });
+    }
+    await writeAuditLog({
+      actorId: userId,
+      actorEmail: userEmail,
+      action: "media_delete",
+      targetType: "storage_object",
+      targetId: rawPath,
+    });
+    return NextResponse.json({ ok: true });
+  } catch {
+    return NextResponse.json(
+      { error: "خدمة التخزين غير متاحة مؤقتاً" },
+      { status: 503 }
+    );
+  }
 }
