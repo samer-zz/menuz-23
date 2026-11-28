@@ -1,4 +1,4 @@
-const CACHE_NAME = "menuz-pwa-v4";
+const CACHE_NAME = "menuz-pwa-v5";
 const IMAGE_CACHE_NAME = "menuz-images-v4";
 const MAX_CACHED_IMAGES = 80;
 
@@ -94,7 +94,14 @@ self.addEventListener("fetch", (event) => {
               headers,
             });
           }
-          return caches.match("/offline");
+          const offlinePage = await caches.match("/offline");
+          return (
+            offlinePage ||
+            new Response("Offline — تعذر الاتصال بالإنترنت", {
+              status: 503,
+              headers: { "Content-Type": "text/plain; charset=utf-8" },
+            })
+          );
         })
     );
     return;

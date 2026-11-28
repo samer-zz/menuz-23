@@ -16,9 +16,20 @@ const ALLOWED_PUSH_HOST_SUFFIXES = [
   ".push.services.mozilla.com",
 ];
 
+export type EndpointVerificationResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "invalid_url" | "private_ip" | "dns_transient_error";
+      permanent: boolean;
+    };
+
 function isPrivateOrReservedIpv4(ip: string): boolean {
   const parts = ip.split(".").map((x) => Number(x));
-  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+  if (
+    parts.length !== 4 ||
+    parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
+  ) {
     return true;
   }
   const [a, b] = parts;
@@ -70,7 +81,9 @@ export function isPrivateOrReservedIp(rawIp: string): boolean {
  * Validates that a Web Push subscription endpoint is strictly HTTPS on default port,
  * is not an IP literal or internal hostname, and matches recognized browser Push Services.
  */
-export function isAllowedPushEndpointUrl(rawUrl: string | null | undefined): boolean {
+export function isAllowedPushEndpointUrl(
+  rawUrl: string | null | undefined
+): boolean {
   if (!rawUrl || rawUrl.length > 600) return false;
   let parsed: URL;
   try {
@@ -101,21 +114,41 @@ export function isAllowedPushEndpointUrl(rawUrl: string | null | undefined): boo
 }
 
 /**
- * Performs URL allowlist check PLUS DNS lookup verification ensuring every resolved IP
- * is public (prevents DNS rebinding / SSRF against internal or cloud metadata services).
+ * Verifies URL allowlist PLUS DNS resolution to public IPs while distinguishing
+ * permanent SSRF/invalid URLs from transient DNS resolution failures (SERVFAIL/EAI_AGAIN/Timeout)
+ * so healthy push subscriptions are never deleted during transient DNS outages.
  */
-export async function resolveAndVerifyPublicPushEndpoint(
+export async function verifyPublicPushEndpoint(
   rawUrl: string,
   lookupFn: (hostname: string) => Promise<Array<{ address: string }>> = (host) =>
     dns.lookup(host, { all: true })
-): Promise<boolean> {
-  if (!isAllowedPushEndpointUrl(rawUrl)) return false;
+): Promise<EndpointVerificationResult> {
+  if (!isAllowedPushEndpointUrl(rawUrl)) {
+    return { ok: false, reason: "invalid_url", permanent: true };
+  }
+
   try {
     const hostname = new URL(rawUrl.trim()).hostname.toLowerCase();
     const records = await lookupFn(hostname);
-    if (!records || records.length === 0) return false;
-    return records.every((rec) => !isPrivateOrReservedIp(rec.address));
+    if (!records || records.length === 0) {
+      return { ok: false, reason: "dns_transient_error", permanent: false };
+    }
+    const hasPrivateIp = records.some((rec) =>
+      isPrivateOrReservedIp(rec.address)
+    );
+    if (hasPrivateIp) {
+      return { ok: false, reason: "private_ip", permanent: true };
+    }
+    return { ok: true };
   } catch {
-    return false;
+    return { ok: false, reason: "dns_transient_error", permanent: false };
   }
+}
+
+export async function resolveAndVerifyPublicPushEndpoint(
+  rawUrl: string,
+  lookupFn?: (hostname: string) => Promise<Array<{ address: string }>>
+): Promise<boolean> {
+  const res = await verifyPublicPushEndpoint(rawUrl, lookupFn);
+  return res.ok;
 }

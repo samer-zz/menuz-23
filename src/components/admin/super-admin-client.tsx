@@ -80,7 +80,7 @@ export function SuperAdminClient({
   events,
   auditLogs,
   messages: initialMessages,
-  orders = [],
+  orders: initialOrders = [],
   feedbacks = [],
 }: {
   profile: Profile;
@@ -105,6 +105,7 @@ export function SuperAdminClient({
   const [tenants, setTenants] = useState<Tenant[]>(initialTenants);
   const [profiles, setProfiles] = useState<Profile[]>(initialProfiles);
   const [messages, setMessages] = useState<ContactMessage[]>(initialMessages);
+  const [orders, setOrders] = useState<OrderRecord[]>(initialOrders);
   const [mustChange, setMustChange] = useState(profile.must_change_password);
   const [qrTenant, setQrTenant] = useState<Tenant | null>(null);
   const [managingTenant, setManagingTenant] = useState<Tenant | null>(null);
@@ -327,6 +328,24 @@ export function SuperAdminClient({
     } finally {
       setSavingTenant(false);
     }
+  };
+
+  const updateOrderStatus = async (
+    orderId: string,
+    newStatus: "confirmed" | "completed" | "cancelled"
+  ) => {
+    const { data, error } = await supabase.rpc("update_tenant_order_status", {
+      p_order_id: orderId,
+      p_new_status: newStatus,
+    });
+    if (error || !data) {
+      toast(error?.message || "تعذر تحديث حالة الطلب", "error");
+      return;
+    }
+    setOrders((prev) =>
+      prev.map((o) => (o.id === orderId ? { ...o, status: newStatus } : o))
+    );
+    toast("تم تحديث حالة الطلب", "success");
   };
 
   const toggleTenantActive = async (t: Tenant) => {
@@ -990,13 +1009,32 @@ export function SuperAdminClient({
                           <span className="font-mono text-xs font-black text-brand-orange">
                             #{ord.order_number}
                           </span>
-                          {t && (
+                          {(t?.name_ar || ord.tenant_name_snapshot) && (
                             <span className="text-xs px-2 py-0.5 rounded-full bg-brand-orange/15 text-brand-orange font-bold">
-                              {t.name_ar}
+                              {t?.name_ar || ord.tenant_name_snapshot}
                             </span>
                           )}
                           <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 font-bold">
                             {ord.order_type === "delivery" ? "توصيل" : "استلام"}
+                          </span>
+                          <span
+                            className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
+                              ord.status === "completed"
+                                ? "bg-emerald-500/20 text-emerald-300"
+                                : ord.status === "confirmed"
+                                  ? "bg-sky-500/20 text-sky-300"
+                                  : ord.status === "cancelled"
+                                    ? "bg-rose-500/20 text-rose-300"
+                                    : "bg-amber-500/20 text-amber-300"
+                            }`}
+                          >
+                            {ord.status === "completed"
+                              ? "مكتمل"
+                              : ord.status === "confirmed"
+                                ? "مؤكد"
+                                : ord.status === "cancelled"
+                                  ? "ملغي"
+                                  : "مرسل"}
                           </span>
                         </div>
                         <p className="text-sm font-bold">
@@ -1014,7 +1052,7 @@ export function SuperAdminClient({
                           {formatArabicDate(ord.created_at)}
                         </p>
                       </div>
-                      <div className="text-left shrink-0">
+                      <div className="text-left shrink-0 space-y-1.5">
                         <p className="font-black text-base text-brand-orange">
                           {formatPrice(ord.computed_total, ord.currency)}
                         </p>
@@ -1022,6 +1060,33 @@ export function SuperAdminClient({
                           {ord.channel} •{" "}
                           {ord.payment_method === "wallet" ? "محفظة" : "نقداً"}
                         </p>
+                        {(ord.status === "sent" || ord.status === "confirmed") && (
+                          <div className="flex flex-wrap gap-1 justify-end pt-1">
+                            {ord.status === "sent" && (
+                              <button
+                                type="button"
+                                onClick={() => updateOrderStatus(ord.id, "confirmed")}
+                                className="px-2 py-1 rounded-lg text-[11px] font-bold bg-sky-500/15 text-sky-300 hover:bg-sky-500/25"
+                              >
+                                تأكيد
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => updateOrderStatus(ord.id, "completed")}
+                              className="px-2 py-1 rounded-lg text-[11px] font-bold bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                            >
+                              إكمال
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateOrderStatus(ord.id, "cancelled")}
+                              className="px-2 py-1 rounded-lg text-[11px] font-bold bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+                            >
+                              إلغاء
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
