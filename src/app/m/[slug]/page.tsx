@@ -49,6 +49,10 @@ export async function generateMetadata({
     title,
     description,
     manifest: `/api/manifest/${tenant.slug}`,
+    icons: {
+      icon: `/api/manifest/${tenant.slug}/icon?size=192`,
+      apple: `/api/manifest/${tenant.slug}/icon?size=180`,
+    },
     openGraph: {
       title,
       description,
@@ -152,6 +156,21 @@ export default async function PublicMenuPage({
         initialNotifications={[]}
       />
     );
+  }
+
+  // Optional v4 appearance columns from migration 005 (graceful fallback if not yet applied)
+  try {
+    const admin = createAdminSupabase();
+    const { data: extraColors } = await admin
+      .from("tenants")
+      .select("background_color, card_color, text_color, button_text_color")
+      .eq("id", tenant.id)
+      .maybeSingle();
+    if (extraColors) {
+      Object.assign(tenant, extraColors);
+    }
+  } catch {
+    // Ignore cleanly before migration 005 is applied
   }
 
   const nowIso = new Date().toISOString();

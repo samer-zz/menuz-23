@@ -53,10 +53,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const toast = useCallback(
     (message: string, type: ToastItem["type"] = "success") => {
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      setToasts((prev) => [...prev.slice(-3), { id, message, type }]);
+      setToasts((prev) => [...prev.slice(-2), { id, message, type }]);
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id));
-      }, 3600);
+      }, 2400);
     },
     []
   );
@@ -64,20 +64,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   return (
     <AppContext.Provider value={{ theme, toggleTheme, toast }}>
       {children}
-      {/* Floating RTL Toast Stack */}
+      {/* Floating Non-Blocking RTL Toast Stack (top-left so it never covers bottom cart/action buttons) */}
       <div
         aria-live="polite"
-        className="fixed bottom-5 left-5 z-[100] flex flex-col gap-2.5 max-w-sm w-[calc(100vw-2.5rem)] pointer-events-none"
+        className="fixed top-4 left-4 z-[100] flex flex-col gap-2 max-w-xs sm:max-w-sm w-[calc(100vw-2rem)] pointer-events-none"
       >
         <AnimatePresence>
           {toasts.map((t) => (
             <motion.div
               key={t.id}
-              initial={{ opacity: 0, y: 18, scale: 0.96 }}
+              initial={{ opacity: 0, y: -14, scale: 0.96 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 12, scale: 0.96 }}
-              transition={{ duration: 0.22 }}
-              className="pointer-events-auto flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-medium shadow-2xl border backdrop-blur-xl bg-white/95 dark:bg-[#092044]/95 border-navy-700/15 dark:border-white/15 text-navy-700 dark:text-white"
+              exit={{ opacity: 0, y: -10, scale: 0.96 }}
+              transition={{ duration: 0.18 }}
+              className="pointer-events-auto flex items-center gap-2.5 rounded-2xl px-3.5 py-2.5 text-xs sm:text-sm font-semibold shadow-xl border backdrop-blur-xl bg-white/95 dark:bg-[#092044]/95 border-navy-700/15 dark:border-white/15 text-navy-700 dark:text-white"
             >
               {t.type === "success" && (
                 <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
