@@ -2,7 +2,10 @@
 
 > آخر تحديث: 2026-11-28  
 > الفرع النشط: `arena/296f4909-menuz-23` (مفرّع من `main` @ `6e15b0417855d4b9af0378bc96a1b9edacf06477`)  
-> المرحلة الحالية: **المرحلة 1 — Security & Database (مكتملة)**
+> آخر Commit: `adcaa03`  
+> حالة Pull Request: **PR #3 (`OPEN` / `MERGEABLE`)** — `https://github.com/samer-zz/menuz-23/pull/3`  
+> معاينة Vercel Preview: **`READY`** (`dpl_ALdn2khDKxcGnUJVP53hz6ZiXjBj` — `https://menuz-23-cdiwlzfoy-samer-z.vercel.app`)  
+> المرحلة الحالية: **المرحلة 1 — Security & Database (مكتملة، بانتظار موافقة المستخدم لدمج PR #3 ثم الانتقال للمرحلة 2)**
 
 ---
 
