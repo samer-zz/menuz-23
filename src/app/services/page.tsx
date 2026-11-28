@@ -17,7 +17,13 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "الخدمات والمميزات",
   description:
-    "اكتشف باقة الخدمات الذكية التي تقدمها منصة مينوز MENUZ للمطاعم والكافيهات.",
+    "اكتشف باقة الخدمات الذكية التي تقدمها منصة مينوز MENUZ للمطاعم والكافيهات — القائمة الرقمية الذكية.. لتجربة فريدة.",
+  openGraph: {
+    title: "الخدمات والمميزات | مينوز MENUZ",
+    description:
+      "امسح.. اطلب.. واستمتع — كل ما تحتاجه لإدارة منيو رقمي عصري ومربح.",
+    images: [{ url: "/branding/menuz_brand_showcase.png", width: 1200, height: 800 }],
+  },
 };
 
 const services = [
