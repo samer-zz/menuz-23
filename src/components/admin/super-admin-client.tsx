@@ -27,6 +27,8 @@ import {
   FileText,
   FlaskConical,
   Search,
+  ShoppingBag,
+  Sparkles,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -40,7 +42,7 @@ import { AnalyticsCharts } from "@/components/dashboard/analytics-charts";
 import { PasswordChangeCard } from "@/components/dashboard/password-change-card";
 import { QrGeneratorModal } from "@/components/dashboard/qr-generator-modal";
 import { TenantMenuManager } from "@/components/dashboard/tenant-menu-manager";
-import { cn, formatArabicDate } from "@/lib/utils";
+import { cn, formatArabicDate, formatPrice } from "@/lib/utils";
 import type {
   AnalyticsEvent,
   AuditLog,
@@ -48,6 +50,8 @@ import type {
   ContactMessage,
   MenuItem,
   Offer,
+  OrderFeedback,
+  OrderRecord,
   Profile,
   Tenant,
   TenantNotification,
@@ -57,6 +61,8 @@ import type {
 type AdminTab =
   | "overview"
   | "tenants"
+  | "orders"
+  | "feedbacks"
   | "accounts"
   | "messages"
   | "audit"
@@ -74,6 +80,8 @@ export function SuperAdminClient({
   events,
   auditLogs,
   messages: initialMessages,
+  orders = [],
+  feedbacks = [],
 }: {
   profile: Profile;
   tenants: Tenant[];
@@ -86,6 +94,8 @@ export function SuperAdminClient({
   events: AnalyticsEvent[];
   auditLogs: AuditLog[];
   messages: ContactMessage[];
+  orders?: OrderRecord[];
+  feedbacks?: OrderFeedback[];
 }) {
   const router = useRouter();
   const { theme, toggleTheme, toast } = useApp();
@@ -117,6 +127,9 @@ export function SuperAdminClient({
   const [tCoverUrl, setTCoverUrl] = useState("");
   const [tPrimaryColor, setTPrimaryColor] = useState("#0B2D5B");
   const [tAccentColor, setTAccentColor] = useState("#FF7A00");
+  const [tBgColor, setTBgColor] = useState("");
+  const [tTextColor, setTTextColor] = useState("");
+  const [tCardColor, setTCardColor] = useState("");
   const [tCurrency, setTCurrency] = useState("ر.ي");
   const [tSuspendedMsg, setTSuspendedMsg] = useState(
     "نعتذر، هذا المنيو متوقف مؤقتاً للصيانة والتحديث."
@@ -194,6 +207,9 @@ export function SuperAdminClient({
     setTCoverUrl("");
     setTPrimaryColor("#0B2D5B");
     setTAccentColor("#FF7A00");
+    setTBgColor("");
+    setTTextColor("");
+    setTCardColor("");
     setTCurrency("ر.ي");
     setTSuspendedMsg("نعتذر، هذا المنيو متوقف مؤقتاً للصيانة والتحديث.");
     setTSeedDemo(false);
@@ -214,6 +230,9 @@ export function SuperAdminClient({
     setTCoverUrl(t.cover_url || "");
     setTPrimaryColor(t.primary_color || "#0B2D5B");
     setTAccentColor(t.accent_color || "#FF7A00");
+    setTBgColor(t.background_color || "");
+    setTTextColor(t.text_color || "");
+    setTCardColor(t.card_color || "");
     setTCurrency(t.currency || "ر.ي");
     setTSuspendedMsg(t.suspended_message || "");
     setTenantModalOpen(true);
@@ -237,6 +256,15 @@ export function SuperAdminClient({
         cover_url: tCoverUrl.trim() || null,
         primary_color: tPrimaryColor,
         accent_color: tAccentColor,
+        background_color: /^#[0-9a-fA-F]{6}$/.test(tBgColor.trim())
+          ? tBgColor.trim()
+          : null,
+        text_color: /^#[0-9a-fA-F]{6}$/.test(tTextColor.trim())
+          ? tTextColor.trim()
+          : null,
+        card_color: /^#[0-9a-fA-F]{6}$/.test(tCardColor.trim())
+          ? tCardColor.trim()
+          : null,
         currency: tCurrency,
         suspended_message: tSuspendedMsg,
         ...(!editingTenant ? { seedDemoTemplate: tSeedDemo } : {}),
@@ -415,8 +443,10 @@ export function SuperAdminClient({
             [
               { key: "overview", label: "الإحصائيات والمقارنة", icon: BarChart3 },
               { key: "tenants", label: `الجهات (${tenants.length})`, icon: Building2 },
+              { key: "orders", label: `الطلبات المسجلة (${orders.length})`, icon: ShoppingBag },
+              { key: "feedbacks", label: `تقييمات التجربة (${feedbacks.length})`, icon: Sparkles },
               { key: "accounts", label: `الحسابات (${profiles.length})`, icon: Users },
-              { key: "messages", label: `الطلبات (${messages.length})`, icon: MessageSquare },
+              { key: "messages", label: `رسائل التواصل (${messages.length})`, icon: MessageSquare },
               { key: "audit", label: "سجل التدقيق", icon: FileText },
               { key: "security", label: "حسابي", icon: KeyRound },
             ] as const
@@ -876,6 +906,148 @@ export function SuperAdminClient({
           </div>
         )}
 
+        {/* RECORDED ORDERS (Server-Verified Totals) */}
+        {tab === "orders" && (
+          <div className="space-y-4">
+            <h2 className="text-xl font-black">
+              سجل الطلبات الموثّقة خادمياً ({orders.length})
+            </h2>
+            {orders.length === 0 ? (
+              <div className="rounded-3xl p-10 text-center glass-panel text-slate-400">
+                لا توجد طلبات مسجلة في جدول الطلبات بعد.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {orders.map((ord) => {
+                  const t = tenants.find((x) => x.id === ord.tenant_id);
+                  return (
+                    <div
+                      key={ord.id}
+                      className="rounded-2xl p-4 glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-xs font-black text-brand-orange">
+                            #{ord.order_number}
+                          </span>
+                          {t && (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-brand-orange/15 text-brand-orange font-bold">
+                              {t.name_ar}
+                            </span>
+                          )}
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 font-bold">
+                            {ord.order_type === "delivery" ? "توصيل" : "استلام"}
+                          </span>
+                        </div>
+                        <p className="text-sm font-bold">
+                          {ord.customer_name || "زائر بدون اسم"}{" "}
+                          {ord.customer_phone ? `• ${ord.customer_phone}` : ""}
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          {Array.isArray(ord.items_snapshot)
+                            ? ord.items_snapshot
+                                .map((s) => `${s.name} × ${s.quantity}`)
+                                .join("، ")
+                            : ""}
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          {formatArabicDate(ord.created_at)}
+                        </p>
+                      </div>
+                      <div className="text-left shrink-0">
+                        <p className="font-black text-base text-brand-orange">
+                          {formatPrice(ord.computed_total, ord.currency)}
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          {ord.channel} •{" "}
+                          {ord.payment_method === "wallet" ? "محفظة" : "نقداً"}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* SUPER-ADMIN-ONLY CUSTOMER EXPERIENCE FEEDBACK */}
+        {tab === "feedbacks" && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-black flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-brand-orange" />
+                  <span>تقييمات تجربة العملاء (حصرية لإدارة المنصة)</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  هذا القسم معزول كلياً عن لوحات تحكم المطاعم والمقاهي ولا يظهر إلا
+                  لمدير النظام.
+                </p>
+              </div>
+              {feedbacks.length > 0 && (
+                <div className="px-4 py-2 rounded-2xl glass-panel text-xs font-extrabold text-brand-orange">
+                  المتوسط العام:{" "}
+                  {(
+                    feedbacks.reduce((s, f) => s + f.rating, 0) /
+                    feedbacks.length
+                  ).toFixed(2)}{" "}
+                  / 5
+                </div>
+              )}
+            </div>
+
+            {feedbacks.length === 0 ? (
+              <div className="rounded-3xl p-10 text-center glass-panel text-slate-400">
+                لا توجد تقييمات مرسلة من العملاء بعد.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {feedbacks.map((fb) => {
+                  const t = tenants.find((x) => x.id === fb.tenant_id);
+                  const emoji =
+                    fb.rating === 5
+                      ? "🤩"
+                      : fb.rating === 4
+                        ? "😊"
+                        : fb.rating === 3
+                          ? "🙂"
+                          : fb.rating === 2
+                            ? "😕"
+                            : "😞";
+                  return (
+                    <div
+                      key={fb.id}
+                      className="rounded-2xl p-4 glass-panel space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-extrabold text-brand-orange">
+                          {t?.name_ar || "جهة مسجلة"}
+                        </span>
+                        <span className="text-sm font-black">
+                          {emoji} {fb.rating}/5
+                        </span>
+                      </div>
+                      {fb.comment ? (
+                        <p className="text-xs leading-relaxed text-slate-200">
+                          {fb.comment}
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-slate-500">
+                          تقييم بالرمز التعبيري فقط بدون ملاحظة نصية
+                        </p>
+                      )}
+                      <p className="text-[11px] text-slate-500">
+                        {formatArabicDate(fb.created_at)}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* AUDIT LOG */}
         {tab === "audit" && (
           <div className="space-y-3">
@@ -1037,6 +1209,45 @@ export function SuperAdminClient({
                   value={tInstagram}
                   onChange={(e) => setTInstagram(e.target.value)}
                   className="w-full rounded-xl px-3 py-2 text-sm bg-slate-100 dark:bg-navy-900 border border-white/15"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400">
+                  لون الخلفية المخصص (اختياري #hex)
+                </label>
+                <input
+                  dir="ltr"
+                  value={tBgColor}
+                  onChange={(e) => setTBgColor(e.target.value)}
+                  placeholder="تلقائي حسب الشعار"
+                  className="w-full rounded-xl px-3 py-2 text-xs bg-slate-100 dark:bg-navy-900 border border-white/15"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400">
+                  لون النص المخصص (اختياري #hex)
+                </label>
+                <input
+                  dir="ltr"
+                  value={tTextColor}
+                  onChange={(e) => setTTextColor(e.target.value)}
+                  placeholder="تلقائي مع فحص التباين"
+                  className="w-full rounded-xl px-3 py-2 text-xs bg-slate-100 dark:bg-navy-900 border border-white/15"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-400">
+                  لون البطاقات المخصص (اختياري #hex)
+                </label>
+                <input
+                  dir="ltr"
+                  value={tCardColor}
+                  onChange={(e) => setTCardColor(e.target.value)}
+                  placeholder="تلقائي متناسق"
+                  className="w-full rounded-xl px-3 py-2 text-xs bg-slate-100 dark:bg-navy-900 border border-white/15"
                 />
               </div>
             </div>

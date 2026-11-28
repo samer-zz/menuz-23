@@ -3,7 +3,12 @@ import { z } from "zod";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { createAdminSupabase } from "@/lib/supabase/admin";
 import { validateStrongPassword } from "@/lib/utils";
-import { verifySameOrigin, writeAuditLog } from "@/lib/security";
+import {
+  buildRateLimitKey,
+  enforceRateLimit,
+  verifySameOrigin,
+  writeAuditLog,
+} from "@/lib/security";
 
 async function requireSuperAdmin() {
   const supabase = await createServerSupabase();
@@ -30,6 +35,27 @@ const createAccountSchema = z.object({
   tenantId: z.string().uuid().nullable().optional(),
 });
 
+async function enforceAdminRateLimit(adminId: string, scope: string) {
+  const rl = await enforceRateLimit(
+    buildRateLimitKey(scope, adminId),
+    30,
+    600
+  );
+  if (rl.status === "rate_limited") {
+    return NextResponse.json(
+      { error: "تم تجاوز الحد المسموح للعمليات الإدارية، يرجى الانتظار قليلاً" },
+      { status: 429 }
+    );
+  }
+  if (rl.status === "unavailable") {
+    return NextResponse.json(
+      { error: "خدمة التحقق الأمني غير متاحة مؤقتاً" },
+      { status: 503 }
+    );
+  }
+  return null;
+}
+
 export async function POST(request: NextRequest) {
   if (!verifySameOrigin(request)) {
     return NextResponse.json({ error: "طلب غير مصرح به" }, { status: 403 });
@@ -39,6 +65,8 @@ export async function POST(request: NextRequest) {
   if (!actor) {
     return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
   }
+  const limited = await enforceAdminRateLimit(actor.id, "admin-users-post");
+  if (limited) return limited;
 
   let body: unknown;
   try {
@@ -124,6 +152,8 @@ export async function DELETE(request: NextRequest) {
   if (!actor) {
     return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
   }
+  const limited = await enforceAdminRateLimit(actor.id, "admin-users-del");
+  if (limited) return limited;
 
   const rawUserId = request.nextUrl.searchParams.get("id");
   const parsedId = z.string().uuid().safeParse(rawUserId);

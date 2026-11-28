@@ -8,6 +8,8 @@ import type {
   ContactMessage,
   MenuItem,
   Offer,
+  OrderFeedback,
+  OrderRecord,
   Profile,
   Tenant,
   TenantNotification,
@@ -49,27 +51,33 @@ export default async function AdminPage() {
     supabase
       .from("tenants")
       .select("*")
-      .order("created_at", { ascending: false }),
+      .order("created_at", { ascending: false })
+      .limit(300),
     supabase
       .from("profiles")
       .select("*")
-      .order("created_at", { ascending: false }),
+      .order("created_at", { ascending: false })
+      .limit(300),
     supabase
       .from("categories")
       .select("*")
-      .order("sort_order", { ascending: true }),
+      .order("sort_order", { ascending: true })
+      .limit(1000),
     supabase
       .from("menu_items")
       .select("*")
-      .order("sort_order", { ascending: true }),
+      .order("sort_order", { ascending: true })
+      .limit(2000),
     supabase
       .from("offers")
       .select("*")
-      .order("created_at", { ascending: false }),
+      .order("created_at", { ascending: false })
+      .limit(500),
     supabase
       .from("wallets")
       .select("*")
-      .order("sort_order", { ascending: true }),
+      .order("sort_order", { ascending: true })
+      .limit(500),
     supabase
       .from("notifications")
       .select("*")
@@ -84,13 +92,56 @@ export default async function AdminPage() {
       .from("audit_logs")
       .select("*")
       .order("created_at", { ascending: false })
-      .limit(100),
+      .limit(150),
     supabase
       .from("contact_messages")
       .select("*")
       .order("created_at", { ascending: false })
-      .limit(100),
+      .limit(150),
   ]);
+
+  // Optional 005 tables: orders & super-admin-only order_feedback (graceful fallback if unapplied)
+  let orders: OrderRecord[] = [];
+  let feedbacks: OrderFeedback[] = [];
+
+  try {
+    const { data: ordersData } = await supabase
+      .from("orders")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (ordersData) orders = ordersData as OrderRecord[];
+  } catch {
+    orders = [];
+  }
+
+  try {
+    const { data: fbData } = await supabase
+      .from("order_feedback")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (fbData) feedbacks = fbData as OrderFeedback[];
+  } catch {
+    feedbacks = [];
+  }
+
+  const auditLogs = (auditRes.data as AuditLog[]) ?? [];
+  if (feedbacks.length === 0) {
+    // Also surface pre-005 feedback captured securely in super-admin-only audit_logs
+    feedbacks = auditLogs
+      .filter((a) => a.action === "order_experience_feedback")
+      .map((a) => ({
+        id: a.id,
+        tenant_id: a.target_id || "",
+        order_id:
+          typeof a.details?.order_id === "string" ? a.details.order_id : null,
+        rating: Number(a.details?.rating) || 5,
+        comment:
+          typeof a.details?.comment === "string" ? a.details.comment : null,
+        created_at: a.created_at,
+      }));
+  }
 
   return (
     <SuperAdminClient
@@ -103,8 +154,10 @@ export default async function AdminPage() {
       wallets={(walletsRes.data as Wallet[]) ?? []}
       notifications={(notificationsRes.data as TenantNotification[]) ?? []}
       events={(eventsRes.data as AnalyticsEvent[]) ?? []}
-      auditLogs={(auditRes.data as AuditLog[]) ?? []}
+      auditLogs={auditLogs}
       messages={(messagesRes.data as ContactMessage[]) ?? []}
+      orders={orders}
+      feedbacks={feedbacks}
     />
   );
 }

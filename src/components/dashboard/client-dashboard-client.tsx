@@ -14,6 +14,7 @@ import {
   Sun,
   Moon,
   Shield,
+  ShoppingBag,
 } from "lucide-react";
 import { useApp } from "@/components/providers/theme-provider";
 import { MenuzLogo } from "@/components/ui/brand-logo";
@@ -21,19 +22,20 @@ import { TenantMenuManager } from "./tenant-menu-manager";
 import { AnalyticsCharts } from "./analytics-charts";
 import { PasswordChangeCard } from "./password-change-card";
 import { QrGeneratorModal } from "./qr-generator-modal";
-import { cn } from "@/lib/utils";
+import { cn, formatArabicDate, formatPrice } from "@/lib/utils";
 import type {
   AnalyticsEvent,
   Category,
   MenuItem,
   Offer,
+  OrderRecord,
   Profile,
   Tenant,
   TenantNotification,
   Wallet,
 } from "@/types/database";
 
-type Tab = "menu" | "analytics" | "security";
+type Tab = "menu" | "orders" | "analytics" | "security";
 
 export function ClientDashboardClient({
   profile,
@@ -44,6 +46,7 @@ export function ClientDashboardClient({
   wallets,
   notifications = [],
   events,
+  orders = [],
 }: {
   profile: Profile;
   tenant: Tenant | null;
@@ -53,6 +56,7 @@ export function ClientDashboardClient({
   wallets: Wallet[];
   notifications?: TenantNotification[];
   events: AnalyticsEvent[];
+  orders?: OrderRecord[];
 }) {
   const router = useRouter();
   const { theme, toggleTheme, toast } = useApp();
@@ -178,6 +182,7 @@ export function ClientDashboardClient({
               {(
                 [
                   { key: "menu", label: "إدارة المنيو والعروض", icon: Utensils },
+                  { key: "orders", label: `الطلبات (${orders.length})`, icon: ShoppingBag },
                   { key: "analytics", label: "إحصائيات الجهة", icon: BarChart3 },
                   { key: "security", label: "الأمان وكلمة المرور", icon: KeyRound },
                 ] as const
@@ -208,6 +213,67 @@ export function ClientDashboardClient({
                 wallets={wallets}
                 notifications={notifications}
               />
+            )}
+
+            {tab === "orders" && (
+              <div className="space-y-4">
+                <div className="rounded-2xl p-4 glass-panel flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+                  <span>
+                    تُسجَّل هنا الطلبات المرسلة عبر سلة المنيو بإجماليات محققة
+                    من قاعدة البيانات لمنع التلاعب بالأسعار.
+                  </span>
+                </div>
+                {orders.length === 0 ? (
+                  <div className="rounded-3xl p-10 text-center glass-panel text-slate-400 text-sm">
+                    لا توجد طلبات مسجلة في سجل الطلبات بعد.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {orders.map((ord) => (
+                      <div
+                        key={ord.id}
+                        className="rounded-2xl p-4 glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                      >
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-xs font-black text-brand-orange">
+                              #{ord.order_number}
+                            </span>
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 font-bold">
+                              {ord.order_type === "delivery" ? "توصيل" : "استلام"}
+                            </span>
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-bold">
+                              {ord.channel === "whatsapp" ? "واتساب" : ord.channel === "sms" ? "رسالة نصية" : "مباشر"}
+                            </span>
+                          </div>
+                          <p className="text-sm font-bold">
+                            {ord.customer_name || "عميل بدون اسم"}{" "}
+                            {ord.customer_phone ? `• ${ord.customer_phone}` : ""}
+                          </p>
+                          <p className="text-xs text-slate-400">
+                            {Array.isArray(ord.items_snapshot)
+                              ? ord.items_snapshot
+                                  .map((s) => `${s.name} × ${s.quantity}`)
+                                  .join("، ")
+                              : ""}
+                          </p>
+                          <p className="text-[11px] text-slate-500">
+                            {formatArabicDate(ord.created_at)}
+                          </p>
+                        </div>
+                        <div className="text-left shrink-0">
+                          <p className="font-black text-base text-brand-orange">
+                            {formatPrice(ord.computed_total, ord.currency)}
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            {ord.payment_method === "wallet" ? "محفظة إلكترونية" : "نقداً"}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
 
             {tab === "analytics" && (

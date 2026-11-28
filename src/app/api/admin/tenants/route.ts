@@ -1,7 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createServerSupabase } from "@/lib/supabase/server";
-import { sanitizeSafeUrl, verifySameOrigin, writeAuditLog } from "@/lib/security";
+import {
+  buildRateLimitKey,
+  enforceRateLimit,
+  sanitizeSafeUrl,
+  verifySameOrigin,
+  writeAuditLog,
+} from "@/lib/security";
+
+async function enforceAdminRateLimit(adminId: string, scope: string) {
+  const rl = await enforceRateLimit(
+    buildRateLimitKey(scope, adminId),
+    35,
+    600
+  );
+  if (rl.status === "rate_limited") {
+    return NextResponse.json(
+      { error: "تم تجاوز الحد المسموح للعمليات الإدارية، يرجى الانتظار قليلاً" },
+      { status: 429 }
+    );
+  }
+  if (rl.status === "unavailable") {
+    return NextResponse.json(
+      { error: "خدمة التحقق الأمني غير متاحة مؤقتاً" },
+      { status: 503 }
+    );
+  }
+  return null;
+}
 
 async function requireSuperAdmin() {
   const supabase = await createServerSupabase();
@@ -61,6 +88,26 @@ const tenantSchema = z.object({
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/, "صيغة اللون الثانوي غير صالحة")
     .default("#FF7A00"),
+  secondary_color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional()
+    .nullable(),
+  background_color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional()
+    .nullable(),
+  text_color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional()
+    .nullable(),
+  card_color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional()
+    .nullable(),
   currency: z.string().trim().min(1).max(20).default("ر.ي"),
   is_active: z.boolean().default(true),
   is_demo: z.boolean().optional(),
@@ -75,6 +122,8 @@ export async function POST(request: NextRequest) {
 
   const ctx = await requireSuperAdmin();
   if (!ctx) return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
+  const limited = await enforceAdminRateLimit(ctx.user.id, "admin-tenants-post");
+  if (limited) return limited;
 
   const body = await request.json().catch(() => null);
   const parsed = tenantSchema.safeParse(body);
@@ -88,11 +137,32 @@ export async function POST(request: NextRequest) {
   const { id: _unusedId, seedDemoTemplate, ...payload } = parsed.data;
   void _unusedId;
 
-  const { data, error } = await ctx.supabase
+  let { data, error } = await ctx.supabase
     .from("tenants")
     .insert(payload)
     .select()
     .single();
+
+  if (error && /column .* does not exist/i.test(error.message)) {
+    const {
+      secondary_color: _sc,
+      background_color: _bg,
+      text_color: _tc,
+      card_color: _cc,
+      ...legacyPayload
+    } = payload;
+    void _sc;
+    void _bg;
+    void _tc;
+    void _cc;
+    const retry = await ctx.supabase
+      .from("tenants")
+      .insert(legacyPayload)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });
@@ -174,6 +244,8 @@ export async function PATCH(request: NextRequest) {
 
   const ctx = await requireSuperAdmin();
   if (!ctx) return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
+  const limited = await enforceAdminRateLimit(ctx.user.id, "admin-tenants-patch");
+  if (limited) return limited;
 
   const body = await request.json().catch(() => null);
   const parsed = tenantSchema.partial().extend({ id: z.string().uuid() }).safeParse(body);
@@ -185,12 +257,34 @@ export async function PATCH(request: NextRequest) {
   }
 
   const { id, ...updates } = parsed.data;
-  const { data, error } = await ctx.supabase
+  let { data, error } = await ctx.supabase
     .from("tenants")
     .update(updates)
     .eq("id", id)
     .select()
     .single();
+
+  if (error && /column .* does not exist/i.test(error.message)) {
+    const {
+      secondary_color: _sc,
+      background_color: _bg,
+      text_color: _tc,
+      card_color: _cc,
+      ...legacyUpdates
+    } = updates;
+    void _sc;
+    void _bg;
+    void _tc;
+    void _cc;
+    const retry = await ctx.supabase
+      .from("tenants")
+      .update(legacyUpdates)
+      .eq("id", id)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });
@@ -220,6 +314,8 @@ export async function DELETE(request: NextRequest) {
 
   const ctx = await requireSuperAdmin();
   if (!ctx) return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
+  const limited = await enforceAdminRateLimit(ctx.user.id, "admin-tenants-del");
+  if (limited) return limited;
 
   const rawId = request.nextUrl.searchParams.get("id");
   const parsedId = z.string().uuid().safeParse(rawId);

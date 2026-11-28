@@ -384,27 +384,30 @@ export function TenantMenuManager({
     setSavingNotif(true);
     try {
       const days = Math.min(30, Math.max(1, Number(notifDays) || 7));
-      const expiresAt = new Date(
-        Date.now() + days * 24 * 60 * 60 * 1000
-      ).toISOString();
-
-      const { data, error } = await supabase
-        .from("notifications")
-        .insert({
-          tenant_id: tenant.id,
+      const res = await fetch("/api/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenantId: tenant.id,
           title: notifTitle.trim(),
           body: notifBody.trim(),
-          expires_at: expiresAt,
-        })
-        .select()
-        .single();
+          daysValid: days,
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || !payload.notification) {
+        return toast(payload.error || "تعذر إرسال الإشعار", "error");
+      }
 
-      if (error) return toast(error.message, "error");
-      setNotifications((p) => [data, ...p]);
+      setNotifications((p) => [payload.notification, ...p]);
       setNotifTitle("");
       setNotifBody("");
       setNotifDays("7");
-      toast("تم إرسال الإشعار وسيظهر فوراً في المنيو العام!", "success");
+      const extra =
+        payload.pushSent > 0
+          ? ` (تم دفع التنبيه لـ ${payload.pushSent} جهاز مشترك)`
+          : "";
+      toast(`تم نشر الإشعار وسيظهر فوراً في المنيو العام${extra}!`, "success");
     } finally {
       setSavingNotif(false);
     }
@@ -946,8 +949,10 @@ export function TenantMenuManager({
                 <span>إرسال إشعار فوري لزوار المنيو</span>
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                يظهر الإشعار لحظياً داخل أيقونة الجرس في المنيو العام ويُحذف
-                تلقائياً عند انتهاء صلاحيته (افتراضياً بعد 7 أيام).
+                يظهر الإشعار لحظياً داخل أيقونة الجرس في المنيو العام ويصل كإشعار
+                متصفح للمشتركين (على أجهزة iOS يعمل Web Push عند تثبيت المنيو
+                على الشاشة الرئيسية في iOS 16.4+). يُحذف الإشعار تلقائياً بعد
+                انتهاء مدته.
               </p>
             </div>
 
