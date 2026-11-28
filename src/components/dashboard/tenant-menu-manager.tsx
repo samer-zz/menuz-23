@@ -431,9 +431,13 @@ export function TenantMenuManager({
       const extra =
         payload.pushMode === "scheduled"
           ? " (تمت الجدولة للإرسال في الموعد المحدد)"
-          : payload.pushSent > 0
+          : payload.pushMode === "web_push_sent"
             ? ` (تم دفع التنبيه لـ ${payload.pushSent} جهاز مشترك)`
-            : "";
+            : payload.pushMode === "web_push_partial"
+              ? ` (وصل لـ ${payload.pushSent} جهاز وتعذر ${payload.pushFailed} — ستتم إعادة المحاولة)`
+              : payload.pushMode === "web_push_failed"
+                ? " (حُفظ داخل المنيو وتعذر الدفع الخارجي حالياً)"
+                : "";
       toast(`تم حفظ الإشعار${extra}!`, "success");
     } finally {
       setSavingNotif(false);

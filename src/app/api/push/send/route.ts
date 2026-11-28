@@ -8,7 +8,11 @@ import {
   verifySameOrigin,
   writeAuditLog,
 } from "@/lib/security";
-import { dispatchTenantWebPush } from "@/lib/web-push-dispatch";
+import {
+  dispatchTenantWebPush,
+  persistNotificationPushOutcome,
+  type PushMode,
+} from "@/lib/web-push-dispatch";
 
 const sendNotificationSchema = z.object({
   tenantId: z.string().uuid(),
@@ -115,6 +119,7 @@ export async function POST(request: NextRequest) {
   if (scheduledIso) {
     insertPayload.scheduled_for = scheduledIso;
     insertPayload.push_sent = false;
+    insertPayload.push_status = "pending";
   }
 
   const { data: notification, error: insertErr } = await supabase
@@ -130,12 +135,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let pushResult = {
-    pushMode: "in_app_only" as
-      | "in_app_only"
-      | "web_push_sent"
-      | "vapid_not_configured"
-      | "scheduled",
+  let pushResult: {
+    pushMode: PushMode | "scheduled";
+    pushTargeted: number;
+    pushSent: number;
+    pushFailed: number;
+    pushCleaned: number;
+    alreadySentCount?: number;
+    lastError?: string | null;
+  } = {
+    pushMode: "no_subscribers",
     pushTargeted: 0,
     pushSent: 0,
     pushFailed: 0,
@@ -156,6 +165,7 @@ export async function POST(request: NextRequest) {
       const dispatch = await dispatchTenantWebPush({
         admin,
         tenantId,
+        notificationId: notification.id,
         tenantSlug: tenant?.slug,
         tenantName: tenant?.name_ar,
         title,
@@ -163,15 +173,14 @@ export async function POST(request: NextRequest) {
       });
 
       pushResult = dispatch;
-
-      if (dispatch.pushMode === "web_push_sent" || dispatch.pushTargeted === 0) {
-        await admin
-          .from("notifications")
-          .update({ push_sent: true })
-          .eq("id", notification.id);
-      }
+      await persistNotificationPushOutcome(
+        admin,
+        notification.id,
+        dispatch,
+        0
+      );
     } catch {
-      // Non-fatal: In-App realtime notification succeeded already
+      pushResult.pushMode = "dispatch_error";
     }
   }
 

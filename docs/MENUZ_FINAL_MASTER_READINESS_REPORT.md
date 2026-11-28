@@ -1,7 +1,7 @@
-# MENUZ — Final Master Engineering, Security, QA & Production Readiness Report
+# MENUZ — Final Master Engineering, Security, QA & Production Readiness Report (v4.1)
 
 **Date:** 2026-11-20 (UTC)  
-**Branch / PR:** `arena/296f4909-menuz-23` / PR #3 (`samer-zz/menuz-23`)  
+**Branch:** `arena/296f4909-menuz-23`  
 **Production URL:** `https://menuz-23.vercel.app/`  
 **Supabase Project:** `fmdfueuezjhnwwchoock`
 
@@ -9,60 +9,37 @@
 
 ## 1. Executive Summary of Hardening & Bug Fixes Completed
 
-During the final ground-truth engineering audit across source code, Supabase live schema, and Vercel project configuration, the following critical production defects and security gaps were identified and resolved:
+Following PR #3 (`476b5f8`), a complete second-pass ground-truth engineering audit across all App Router pages, API routes, Service Worker/PWA manifests, PostgreSQL migrations/RLS policies, Web Push dispatch, Cron lifecycle, and Vercel environment settings identified and resolved the remaining lifecycle and reliability defects:
 
-1. **Cron Maintenance Schema & Parameter Alignment (`src/app/api/cron/cleanup-notifications/route.ts` & `005`):**
-   - Fixed RPC parameter mismatch from `p_batch_size` to `p_batch_limit` matching PostgreSQL `public.run_maintenance_cleanup(p_batch_limit integer)`.
-   - Fixed legacy fallback table/column from non-existent `rate_limits.window_started_at` to actual `public.api_rate_limits.window_start`.
-   - Stopped swallowing genuine DB/permission errors into legacy fallback (now returns HTTP `500` on non-missing-function errors).
-   - Added due scheduled notification Web Push dispatch (`scheduled_for <= now() AND push_sent = false`).
+1. **Cron Scheduled Notification & Partial-Retry Lifecycle (`src/app/api/cron/cleanup-notifications/route.ts`, `006`):**
+   - Stopped falsely setting `push_sent = true` when `VAPID` keys are missing (`vapid_not_configured`), when no subscribers exist (`no_subscribers`), or when push dispatch fails (`partial` / `failed`).
+   - Added `006_notification_push_delivery_tracking.sql` introducing `push_status`, `push_attempts`, `push_last_error`, `push_last_attempt_at`, `push_sent_at` on `public.notifications`, plus `public.notification_push_deliveries` (`service_role` only) for per-subscription delivery deduplication so retrying a partial failure never sends duplicate notifications to subscribers who already received it.
+   - Explicitly checked `dueErr` and `tenantsErr`, isolated push dispatch inside its own `try/catch` so push failures never block `run_maintenance_cleanup(5000)`, and added structured `scheduled_push` summary counters (`attempted`, `sent`, `partial`, `failed`, `vapid_not_configured`, `no_subscribers`, `errors`).
 
-2. **Atomic Order Idempotency, Least-Privilege Orders & History Retention (`005` & `src/app/api/orders/route.ts`):**
-   - Replaced racy two-step `SELECT` + `INSERT` with atomic PostgreSQL RPC `public.create_order_atomic(...)` using `ON CONFLICT (tenant_id, idempotency_key) DO NOTHING` + `payload_hash` comparison.
-   - Reused `idempotencyKey` with identical payload returns `200` (`duplicate: true`) without re-recording `order_submit` analytics or re-issuing feedback tokens; reused `idempotencyKey` with different payload returns **`409 Conflict`**.
-   - Validated `walletId` strictly belongs to the target `tenantId` and `is_active = true` (`400` otherwise).
-   - Removed broad `UPDATE` privilege on `public.orders` from `authenticated`; introduced safe `public.update_tenant_order_status(p_order_id, p_new_status)` RPC enforcing valid forward transitions (`sent -> confirmed -> completed` or `cancelled`).
-   - Changed `orders.tenant_id` FK from `ON DELETE CASCADE` to `ON DELETE SET NULL` with `tenant_name_snapshot` so historical order records survive even if a tenant row is removed.
+2. **Web Push DNS Transient Fault Tolerance & Accurate `pushMode` (`src/lib/push-security.ts`, `src/lib/web-push-dispatch.ts`, `/api/push/send`):**
+   - Replaced boolean DNS resolution check with `verifyPublicPushEndpoint` distinguishing permanent SSRF/invalid targets (`invalid_url`, `private_ip`) from transient DNS failures (`dns_transient_error`: `SERVFAIL`, `EAI_AGAIN`, timeout, empty lookup).
+   - Transient DNS errors and `429`/`5xx`/timeouts no longer delete healthy `push_subscriptions` rows; only permanent SSRF/invalid URLs or HTTP `404`/`410` expirations remove stale subscriptions.
+   - Fixed `dispatchTenantWebPush` to return accurate `pushMode` (`web_push_sent`, `web_push_partial`, `web_push_failed`, `vapid_not_configured`, `no_subscribers`, `dispatch_error`) and updated `TenantMenuManager` toast messages accordingly.
 
-3. **Cryptographic Order-Eligibility Verification on Feedback (`005` & `src/app/api/feedback/route.ts`):**
-   - `/api/orders` generates a CSPRNG `feedbackToken`, stores its SHA-256 `feedback_token_hash` on `public.orders`, and returns `feedbackToken` only in the order creation response.
-   - `/api/feedback` verifies `orderId`, `tenantId`, and `timingSafeEqual(sha256(feedbackToken), feedback_token_hash)`, enforces unique `(order_id)` constraint (`409` on duplicate), and never returns fake `ok: true` on persistence failure.
-   - Strict `super_admin`-only access on `public.order_feedback` verified on live PostgreSQL (`client_admin` and `anon` denied).
+3. **Real Web Push Activation in Vercel (`menuz-23`):**
+   - Generated an ECDSA P-256 VAPID keypair and configured `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (`plain`) and `VAPID_PRIVATE_KEY` (`sensitive` / encrypted secret) across Production, Preview, and Development alongside `VAPID_SUBJECT=mailto:admin@menuz.app`.
+   - Zero secrets or private keys are stored in Git, source files, test outputs, or documentation.
 
-4. **Web Push SSRF Protection & Lifecycle (`src/lib/push-security.ts`, `src/lib/web-push-dispatch.ts`, `/api/push/{subscribe,send}`):**
-   - Enforced strict HTTPS default-port allowlist of recognized browser Push Services (`fcm.googleapis.com`, `android.googleapis.com`, `updates.push.services.mozilla.com`, `*.push.apple.com`, `*.notify.windows.com`, `*.webpush.microsoft.com`).
-   - Added DNS lookup verification rejecting all private/loopback/link-local/metadata IPv4 and IPv6 addresses (`127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `::1`, `fc00::/7`, `fe80::/10`).
-   - Added rate limiting to `DELETE /api/push/subscribe`, bounded batch concurrency (`10`) + `5000ms` timeout in `webPush.sendNotification`, automatic cleanup on HTTP `404`/`410`, and `push_sent` tracking.
-
-5. **Image Decoder & Storage Hardening (`src/lib/image-validation.ts`, `src/app/api/manifest/[slug]/icon/route.ts`, `005`):**
-   - Tightened `sharp` decode policy to `failOn: "warning"` in both upload sanitization and dynamic PWA icon generation, with `validateImageBuffer` pre-checks.
-   - Applied `005` dropping direct `authenticated` write policies (`menus_media_admin_upload`, `menus_media_admin_update`, `menus_media_admin_delete`) on `storage.objects` and setting `menus-media` bucket limit to `4194304` bytes (4 MiB).
-
-6. **Dashboard & Menu UX Completion:**
-   - Added Tenant Appearance Colors customization card inside `TenantMenuManager` -> Settings tab (calling `update_client_tenant_appearance` RPC with live WCAG contrast ratio indicator).
-   - Added Scheduled Notification date/time picker in `TenantMenuManager` -> Notifications tab.
-   - Added Order Status progression controls (`تأكيد` / `إكمال` / `إلغاء`) inside `ClientDashboardClient` -> Orders tab using `update_tenant_order_status` RPC.
-   - Converted `NEXT_PUBLIC_VAPID_PUBLIC_KEY` via `urlBase64ToUint8Array` for cross-browser Safari/iOS/Firefox `pushManager.subscribe` compatibility.
+4. **Atomic Order Idempotency, Feedback Auth, Super Admin Order Controls & PWA Safety:**
+   - Verified `create_order_atomic(...)` (`created` / `duplicate` / `conflict` HTTP `409`), DB-computed totals, tenant-scoped active `walletId` verification, hashed `feedbackToken` (`timingSafeEqual`), and `orders.tenant_id` `ON DELETE SET NULL` history retention.
+   - Added `update_tenant_order_status` progression controls (`تأكيد` / `إكمال` / `إلغاء`) to `SuperAdminClient` Orders tab as well as `ClientDashboardClient`.
+   - Bumped `public/sw.js` cache key to `menuz-pwa-v5` with safe offline fallback `Response` if `/offline` cache entry is unavailable.
 
 ---
 
-## 2. Database Migration & Rollback Verification (`fmdfueuezjhnwwchoock`)
+## 2. Database Migrations & Rollback Verification (`fmdfueuezjhnwwchoock`)
 
-- **Pre-Migration Backup:** Logical JSON snapshot of `tenants` (3), `categories` (8), `menu_items` (23), `offers` (4), `wallets` (4), `notifications` (2), `profiles` (4) verified via Supabase `execute_query` before migration.
-- **Migration Applied:** `005_menuz_v4_platform_hardening` applied atomically via `supabase:create_migration`.
-- **Post-Migration Data Integrity Check:** All existing records preserved (`tenants=3`, `categories=8`, `menu_items=23`, `offers=4`, `wallets=4`, `storage.objects=12`, `analytics_events=83`).
-- **Live PostgreSQL RLS & Privilege Assertions (`DO $$` verification):**
-  - `anon` denied on `orders`, `order_feedback`, `push_subscriptions`.
-  - Cross-tenant `client_admin` (`indomito`) blocked from reading `demo` orders, blocked from reading ANY `order_feedback`, blocked from direct `UPDATE` on `orders`, and blocked from mutating `demo` order status.
-  - `super_admin` verified reading `order_feedback` and advancing order status `sent -> confirmed -> completed` with terminal state protection.
-  - `create_order_atomic` verified `created`, `duplicate`, and `conflict` outcomes; `run_maintenance_cleanup(5000)` verified.
-  - All temporary verification rows removed cleanly after assertion (`orders=0`, `order_feedback=0`, `analytics_events=83`).
-
-### Emergency Rollback Plan (If Needed)
-Migration `005` is additive for all existing tables (`tenants`, `categories`, `menu_items`, `offers`, `wallets`, `notifications`, `profiles`) and drops only legacy direct Storage upload policies. If an emergency revert is ever required without losing customer orders:
-1. Revert the application deployment in Vercel to the previous Production deployment (`dpl_34JufLApW8K7bqvoNCDGB3E9hrU8`).
-2. Restore Storage policies only if legacy direct client uploads were temporarily re-enabled (not recommended).
-3. Keep `orders` and `order_feedback` tables intact so zero recorded orders are ever lost.
+- **Applied Migrations:** `001` through `005` (`20261128114610_005_menuz_v4_platform_hardening`) and `006` (`notification_push_delivery_tracking`).
+- **Data Preservation Verified:** All tenant records (`tenants=3`: `demo`, `indomito`, `alwaleed`), `categories=8`, `menu_items=23`, `profiles=4`, `orders=5`, `order_feedback=1`, `notifications=1` remained intact across `006`.
+- **Live PostgreSQL Assertions Executed & Cleaned:**
+  - Verified `anon` and `authenticated` have zero privileges on `public.notification_push_deliveries` and `public.push_subscriptions`, with RLS enabled (`relrowsecurity = true`).
+  - Verified `notifications.push_status` check constraint rejects invalid states and accepts valid states.
+  - Verified `create_order_atomic` (`created` -> `duplicate` -> `conflict`) and `run_maintenance_cleanup(5000)` cleanly, deleting all temporary verification rows afterward.
 
 ---
 
@@ -72,23 +49,22 @@ Migration `005` is additive for all existing tables (`tenants`, `categories`, `m
 |---|---|---|
 | `npm run typecheck` | Pass | 0 TypeScript errors |
 | `npm run lint` | Pass | 0 ESLint warnings/errors |
-| `node --test tests/*.test.mjs` | Pass (17/17) | Security, Sharp, Cron contract, Atomic Orders + Feedback, Push SSRF/DNS, Scalability simulation |
-| `npm run build` | Pass | Production build clean (30 routes + Middleware) |
-| Live Local Production (`next start`) | Pass | HTTP 200 on 10 public/API/manifest routes, strict prod CSP/XFO headers, `/admin` & `/dashboard` `307 -> /login`, negative `403`/`401` checks |
-| HTTP Load Test (Local Prod) | Pass | 120 requests at concurrency 20 across 6 routes (`0` errors, `p50=38.0ms`) |
-| Live Supabase RLS/RPC Check | Pass | Applied `005`, verified `anon`/`client_admin`/`super_admin` isolation & Storage lockdown |
+| `node --test tests/*.test.mjs` | Pass (18/18) | Security, Sharp, Cron contract & push error isolation, Atomic Orders + Feedback, Push SSRF/DNS transient vs permanent + partial non-duplicating retry, Scalability simulation |
+| `npm run build` | Pass | Production build clean (31 routes + Middleware) |
+| Live Local Production (`next start`) | Pass | HTTP 200 across 9 public/PWA routes, strict `X-Frame-Options: DENY` & CSP `frame-ancestors 'none'`, negative `401`/`403` route guards, 100-req concurrency-20 burst (`0` errors, `p50=20.9ms`) |
+| Live Supabase RLS/RPC Check | Pass | `006` applied, privilege revocations, `push_status` check constraint, `create_order_atomic`, `run_maintenance_cleanup(5000)` |
 
 ---
 
 ## 4. Vercel Environment Variables (`menuz-23`)
 
-| Key | Status | Notes |
+| Key | Status | Target |
 |---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | Configured | Production, Preview, Development |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Configured | Production, Preview, Development |
+| `NEXT_PUBLIC_SUPABASE_URL` | Configured (Encrypted) | Production, Preview, Development |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Configured (Encrypted) | Production, Preview, Development |
 | `SUPABASE_SERVICE_ROLE_KEY` | Configured (Encrypted) | Production, Preview, Development |
-| `NEXT_PUBLIC_SITE_URL` | Configured | Production, Preview, Development |
+| `NEXT_PUBLIC_SITE_URL` | Configured (Encrypted) | Production, Preview, Development |
 | `CRON_SECRET` | Configured (Encrypted) | Production, Preview, Development |
 | `VAPID_SUBJECT` | Configured (`mailto:admin@menuz.app`) | Production, Preview, Development |
-| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | Owner Action Optional | Generate locally via `npx web-push generate-vapid-keys` and add in Vercel Settings to enable external browser Web Push (In-App Realtime Notifications are active without it) |
-| `VAPID_PRIVATE_KEY` | Owner Action Optional | Set as Sensitive in Vercel alongside `NEXT_PUBLIC_VAPID_PUBLIC_KEY` |
+| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | Configured (Plain) | Production, Preview, Development |
+| `VAPID_PRIVATE_KEY` | Configured (Sensitive / Secret) | Production, Preview, Development |

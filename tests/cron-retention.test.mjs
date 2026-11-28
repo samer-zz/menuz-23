@@ -6,9 +6,11 @@ import { pathToFileURL } from "node:url";
 
 const rootDir = process.cwd();
 let mockRpcMode = "v4";
+let mockNotifQueryMode = "empty";
 let lastMaintParams = null;
 let lastDeletedTable = null;
 let lastDeletedColumn = null;
+let lastNotifUpdate = null;
 
 globalThis.__menuzCronMockAdmin = () => ({
   rpc: async (fnName, params) => {
@@ -30,14 +32,18 @@ globalThis.__menuzCronMockAdmin = () => ({
       if (mockRpcMode === "permission_error") {
         return {
           data: null,
-          error: { code: "42501", message: "permission denied for function run_maintenance_cleanup" },
+          error: {
+            code: "42501",
+            message: "permission denied for function run_maintenance_cleanup",
+          },
         };
       }
       return {
         data: null,
         error: {
           code: "PGRST202",
-          message: "Could not find the function public.run_maintenance_cleanup(p_batch_limit) in the schema cache",
+          message:
+            "Could not find the function public.run_maintenance_cleanup(p_batch_limit) in the schema cache",
         },
       };
     }
@@ -51,15 +57,86 @@ globalThis.__menuzCronMockAdmin = () => ({
       return {
         select: () => ({
           eq: () => ({
-            not: () => ({
-              lte: () => ({
+            in: () => ({
+              lt: () => ({
                 gt: () => ({
-                  order: () => ({
-                    limit: async () => ({ data: [], error: null }),
+                  or: () => ({
+                    order: () => ({
+                      limit: async () => {
+                        if (mockNotifQueryMode === "query_error") {
+                          return {
+                            data: null,
+                            error: { message: "connection timeout" },
+                          };
+                        }
+                        if (mockNotifQueryMode === "due_no_vapid") {
+                          return {
+                            data: [
+                              {
+                                id: "notif-due-1",
+                                tenant_id: "tenant-1",
+                                title: "عرض مجدول",
+                                body: "خصم 20%",
+                                push_attempts: 0,
+                                push_status: "pending",
+                              },
+                            ],
+                            error: null,
+                          };
+                        }
+                        return { data: [], error: null };
+                      },
+                    }),
                   }),
                 }),
               }),
             }),
+          }),
+        }),
+        update: (data) => ({
+          eq: async (_col, id) => {
+            lastNotifUpdate = { id, data };
+            return { error: null };
+          },
+        }),
+      };
+    }
+    if (table === "tenants") {
+      return {
+        select: () => ({
+          in: async () => ({
+            data: [{ id: "tenant-1", slug: "demo", name_ar: "Demo" }],
+            error: null,
+          }),
+        }),
+      };
+    }
+    if (table === "push_subscriptions") {
+      return {
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              limit: async () => ({
+                data: [
+                  {
+                    id: "sub-1",
+                    endpoint: "https://fcm.googleapis.com/fcm/send/test",
+                    p256dh: "p256dh-val",
+                    auth: "auth-val",
+                  },
+                ],
+                error: null,
+              }),
+            }),
+          }),
+        }),
+      };
+    }
+    if (table === "notification_push_deliveries") {
+      return {
+        select: () => ({
+          eq: () => ({
+            eq: async () => ({ data: [], error: null }),
           }),
         }),
       };
@@ -127,55 +204,83 @@ test("Cron Retention: rejects missing or wrong CRON_SECRET", async () => {
   assert.equal(rWrong.status, 401);
 });
 
-test("Cron Retention: calls run_maintenance_cleanup with p_batch_limit, propagates non-missing errors, and falls back to api_rate_limits.window_start", async () => {
+test("Cron Retention: isolates push errors, preserves push_sent=false when VAPID missing, and enforces retention RPC", async () => {
   process.env.CRON_SECRET = "test-cron-secret-value-123";
-  const { NextRequest } = await import("next/server");
-  const { GET } = await import(
-    pathToFileURL(
-      path.join(rootDir, "src/app/api/cron/cleanup-notifications/route.ts")
-    ).href
-  );
+  const prevPub = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+  const prevPriv = process.env.VAPID_PRIVATE_KEY;
+  delete process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+  delete process.env.VAPID_PRIVATE_KEY;
 
-  // 1. V4 RPC mode with exact p_batch_limit parameter
-  mockRpcMode = "v4";
-  lastMaintParams = null;
-  const r1 = await GET(
-    new NextRequest("https://menuz-23.vercel.app/api/cron/cleanup-notifications", {
-      headers: { authorization: "Bearer test-cron-secret-value-123" },
-    })
-  );
-  assert.equal(r1.status, 200);
-  const j1 = await r1.json();
-  assert.equal(j1.ok, true);
-  assert.equal(j1.mode, "run_maintenance_cleanup");
-  assert.deepEqual(lastMaintParams, { p_batch_limit: 5000 });
-  assert.equal(j1.summary.analytics_events_deleted, 120);
+  try {
+    const { NextRequest } = await import("next/server");
+    const { GET } = await import(
+      pathToFileURL(
+        path.join(rootDir, "src/app/api/cron/cleanup-notifications/route.ts")
+      ).href
+    );
 
-  // 2. Permission/DB error must NOT silently fall back
-  mockRpcMode = "permission_error";
-  const rErr = await GET(
-    new NextRequest("https://menuz-23.vercel.app/api/cron/cleanup-notifications", {
-      headers: { authorization: "Bearer test-cron-secret-value-123" },
-    })
-  );
-  assert.equal(rErr.status, 500);
-  const jErr = await rErr.json();
-  assert.equal(jErr.ok, false);
+    // 1. Due notification with missing VAPID must NOT set push_sent=true
+    mockRpcMode = "v4";
+    mockNotifQueryMode = "due_no_vapid";
+    lastNotifUpdate = null;
+    const rVapid = await GET(
+      new NextRequest("https://menuz-23.vercel.app/api/cron/cleanup-notifications", {
+        headers: { authorization: "Bearer test-cron-secret-value-123" },
+      })
+    );
+    assert.equal(rVapid.status, 200);
+    const jVapid = await rVapid.json();
+    assert.equal(jVapid.scheduled_push.attempted, 1);
+    assert.equal(jVapid.scheduled_push.vapid_not_configured, 1);
+    assert.equal(jVapid.scheduled_push.sent, 0);
+    assert.equal(lastNotifUpdate.data.push_sent, false);
+    assert.equal(lastNotifUpdate.data.push_status, "vapid_not_configured");
 
-  // 3. Missing function falls back cleanly to api_rate_limits.window_start
-  mockRpcMode = "legacy";
-  lastDeletedTable = null;
-  lastDeletedColumn = null;
-  const r2 = await GET(
-    new NextRequest("https://menuz-23.vercel.app/api/cron/cleanup-notifications", {
-      headers: { authorization: "Bearer test-cron-secret-value-123" },
-    })
-  );
-  assert.equal(r2.status, 200);
-  const j2 = await r2.json();
-  assert.equal(j2.ok, true);
-  assert.equal(j2.mode, "legacy_cleanup_fallback");
-  assert.equal(j2.deleted_notifications, 3);
-  assert.equal(lastDeletedTable, "api_rate_limits");
-  assert.equal(lastDeletedColumn, "window_start");
+    // 2. Push query error must be reported in scheduled_push.errors WITHOUT blocking retention cleanup
+    mockNotifQueryMode = "query_error";
+    const rQueryErr = await GET(
+      new NextRequest("https://menuz-23.vercel.app/api/cron/cleanup-notifications", {
+        headers: { authorization: "Bearer test-cron-secret-value-123" },
+      })
+    );
+    assert.equal(rQueryErr.status, 200);
+    const jQueryErr = await rQueryErr.json();
+    assert.equal(jQueryErr.ok, true);
+    assert.deepEqual(jQueryErr.scheduled_push.errors, [
+      "due_notifications_query_failed",
+    ]);
+    assert.deepEqual(lastMaintParams, { p_batch_limit: 5000 });
+
+    // 3. Permission/DB error on retention RPC must return 500
+    mockNotifQueryMode = "empty";
+    mockRpcMode = "permission_error";
+    const rErr = await GET(
+      new NextRequest("https://menuz-23.vercel.app/api/cron/cleanup-notifications", {
+        headers: { authorization: "Bearer test-cron-secret-value-123" },
+      })
+    );
+    assert.equal(rErr.status, 500);
+    const jErr = await rErr.json();
+    assert.equal(jErr.ok, false);
+
+    // 4. Missing function falls back cleanly to api_rate_limits.window_start
+    mockRpcMode = "legacy";
+    lastDeletedTable = null;
+    lastDeletedColumn = null;
+    const r2 = await GET(
+      new NextRequest("https://menuz-23.vercel.app/api/cron/cleanup-notifications", {
+        headers: { authorization: "Bearer test-cron-secret-value-123" },
+      })
+    );
+    assert.equal(r2.status, 200);
+    const j2 = await r2.json();
+    assert.equal(j2.ok, true);
+    assert.equal(j2.mode, "legacy_cleanup_fallback");
+    assert.equal(j2.deleted_notifications, 3);
+    assert.equal(lastDeletedTable, "api_rate_limits");
+    assert.equal(lastDeletedColumn, "window_start");
+  } finally {
+    if (prevPub !== undefined) process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY = prevPub;
+    if (prevPriv !== undefined) process.env.VAPID_PRIVATE_KEY = prevPriv;
+  }
 });

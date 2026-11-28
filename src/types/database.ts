@@ -110,6 +110,17 @@ export interface TenantNotification {
   expires_at: string;
   scheduled_for?: string | null;
   push_sent?: boolean;
+  push_status?:
+    | "pending"
+    | "sent"
+    | "partial"
+    | "failed"
+    | "vapid_not_configured"
+    | "no_subscribers";
+  push_attempts?: number;
+  push_last_error?: string | null;
+  push_last_attempt_at?: string | null;
+  push_sent_at?: string | null;
   created_at: string;
 }
 
@@ -123,7 +134,8 @@ export interface OrderItemSnapshot {
 
 export interface OrderRecord {
   id: string;
-  tenant_id: string;
+  tenant_id: string | null;
+  tenant_name_snapshot?: string | null;
   order_number: string;
   idempotency_key: string;
   customer_name: string | null;
