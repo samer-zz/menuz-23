@@ -20,7 +20,8 @@ const metadataSchema = z
 
 const eventSchema = z.object({
   tenantId: z.string().uuid(),
-  eventType: z.enum(["menu_scan", "item_view", "order_submit"]),
+  // `order_submit` is recorded exclusively server-side inside /api/orders after DB price verification
+  eventType: z.enum(["menu_scan", "item_view"]),
   itemId: z.string().uuid().optional().nullable(),
   metadata: metadataSchema,
 });
