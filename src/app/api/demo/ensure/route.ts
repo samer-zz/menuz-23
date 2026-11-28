@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { createAdminSupabase } from "@/lib/supabase/admin";
 import {
+  buildRateLimitKey,
   enforceRateLimit,
   getClientIp,
   verifySameOrigin,
@@ -14,11 +15,17 @@ export async function POST(request: NextRequest) {
   }
 
   const ip = getClientIp(request);
-  const allowed = await enforceRateLimit(`demo:${ip}`, 20, 60);
-  if (!allowed) {
+  const rl = await enforceRateLimit(buildRateLimitKey("demo", ip), 20, 60);
+  if (rl.status === "rate_limited") {
     return NextResponse.json(
       { error: "يرجى الانتظار قليلاً قبل إعادة المحاولة" },
       { status: 429 }
+    );
+  }
+  if (rl.status === "unavailable") {
+    return NextResponse.json(
+      { error: "خدمة التحقق الأمني غير متاحة مؤقتاً، يمكنك فتح المنيو التجريبي مباشرة" },
+      { status: 503 }
     );
   }
 

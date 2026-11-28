@@ -146,18 +146,27 @@ export function SuperAdminClient({
     setUploadingMedia(true);
     try {
       const compressed = await compressImageFile(file);
-      const ext = compressed.name.split(".").pop() || "webp";
-      const filePath = `super-admin/${folder}-${Date.now()}.${ext}`;
-      const { error } = await supabase.storage
-        .from("menus-media")
-        .upload(filePath, compressed, { upsert: true });
-      if (error) {
-        toast(error.message, "error");
+      const formData = new FormData();
+      formData.append("file", compressed);
+      formData.append("folder", folder);
+      if (editingTenant?.id) {
+        formData.append("tenantId", editingTenant.id);
+      }
+
+      const res = await fetch("/api/media/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.url) {
+        toast(data?.error || "فشل رفع الصورة", "error");
         return null;
       }
-      const { data } = supabase.storage.from("menus-media").getPublicUrl(filePath);
-      toast("تم رفع الصورة بنجاح", "success");
-      return data.publicUrl;
+      toast("تم التحقق من الصورة ورفعها بنجاح", "success");
+      return data.url as string;
+    } catch {
+      toast("تعذر الاتصال بخدمة رفع الصور", "error");
+      return null;
     } finally {
       setUploadingMedia(false);
     }

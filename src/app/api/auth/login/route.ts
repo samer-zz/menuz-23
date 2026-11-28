@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { createAdminSupabase } from "@/lib/supabase/admin";
-import { verifySameOrigin } from "@/lib/security";
+import {
+  buildRateLimitKey,
+  getClientIp,
+  verifySameOrigin,
+} from "@/lib/security";
 
 const loginSchema = z.object({
   email: z.string().trim().email("البريد الإلكتروني غير صالح").max(160),
@@ -33,20 +37,48 @@ export async function POST(request: NextRequest) {
   }
 
   const email = parsed.data.email.toLowerCase();
-  const ip =
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") ||
-    "unknown";
-  const rateKey = `${ip}:${email}`;
+  const ip = getClientIp(request);
+  const rateKey = buildRateLimitKey("login", `${ip}:${email}`);
 
-  const admin = createAdminSupabase();
+  let admin: ReturnType<typeof createAdminSupabase>;
+  let rateRow: {
+    key: string;
+    attempts: number;
+    window_start: string;
+    locked_until: string | null;
+  } | null = null;
+
+  try {
+    admin = createAdminSupabase();
+    const { data, error: rlReadErr } = await admin
+      .from("login_rate_limits")
+      .select("key, attempts, window_start, locked_until")
+      .eq("key", rateKey)
+      .maybeSingle();
+
+    if (rlReadErr) {
+      console.warn("[auth/login] Rate limit store read error");
+      return NextResponse.json(
+        {
+          error:
+            "خدمة التحقق الأمني غير متاحة مؤقتاً، يرجى المحاولة بعد قليل.",
+        },
+        { status: 503 }
+      );
+    }
+    rateRow = data;
+  } catch {
+    console.warn("[auth/login] Rate limit store unavailable");
+    return NextResponse.json(
+      {
+        error:
+          "خدمة التحقق الأمني غير متاحة مؤقتاً، يرجى المحاولة بعد قليل.",
+      },
+      { status: 503 }
+    );
+  }
+
   const now = new Date();
-
-  const { data: rateRow } = await admin
-    .from("login_rate_limits")
-    .select("*")
-    .eq("key", rateKey)
-    .maybeSingle();
 
   if (rateRow?.locked_until && new Date(rateRow.locked_until) > now) {
     const minsLeft = Math.ceil(
@@ -77,12 +109,17 @@ export async function POST(request: NextRequest) {
         ? new Date(now.getTime() + WINDOW_MS).toISOString()
         : null;
 
-    await admin.from("login_rate_limits").upsert({
+    const { error: rlWriteErr } = await admin.from("login_rate_limits").upsert({
       key: rateKey,
       attempts: nextAttempts,
-      window_start: windowExpired ? now.toISOString() : rateRow.window_start,
+      window_start:
+        windowExpired || !rateRow ? now.toISOString() : rateRow.window_start,
       locked_until: lockedUntil,
     });
+
+    if (rlWriteErr) {
+      console.warn("[auth/login] Rate limit store write error");
+    }
 
     const remaining = Math.max(0, MAX_ATTEMPTS - nextAttempts);
     return NextResponse.json(

@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createAdminSupabase } from "@/lib/supabase/admin";
-import { enforceRateLimit, getClientIp, verifySameOrigin } from "@/lib/security";
+import {
+  buildRateLimitKey,
+  enforceRateLimit,
+  getClientIp,
+  verifySameOrigin,
+} from "@/lib/security";
 
 const contactSchema = z.object({
   name: z.string().trim().min(2, "الاسم مطلوب").max(120, "الاسم طويل جداً"),
@@ -51,28 +56,41 @@ export async function POST(request: NextRequest) {
   }
 
   const ip = getClientIp(request);
-  const allowed = await enforceRateLimit(`contact:${ip}`, 5, 900);
-  if (!allowed) {
+  const rl = await enforceRateLimit(buildRateLimitKey("contact", ip), 5, 900);
+  if (rl.status === "rate_limited") {
     return NextResponse.json(
       { error: "تم تجاوز الحد المسموح للإرسال، يرجى المحاولة بعد 15 دقيقة" },
       { status: 429 }
     );
   }
-
-  const admin = createAdminSupabase();
-  const { error } = await admin.from("contact_messages").insert({
-    name: parsed.data.name,
-    phone: parsed.data.phone,
-    business_name: parsed.data.business_name || null,
-    message: parsed.data.message,
-  });
-
-  if (error) {
+  if (rl.status === "unavailable") {
     return NextResponse.json(
-      { error: "تعذر إرسال الطلب حالياً، يرجى المحاولة لاحقاً" },
-      { status: 500 }
+      { error: "خدمة التحقق الأمني غير متاحة مؤقتاً، يرجى المحاولة بعد قليل" },
+      { status: 503 }
     );
   }
 
-  return NextResponse.json({ ok: true });
+  try {
+    const admin = createAdminSupabase();
+    const { error } = await admin.from("contact_messages").insert({
+      name: parsed.data.name,
+      phone: parsed.data.phone,
+      business_name: parsed.data.business_name || null,
+      message: parsed.data.message,
+    });
+
+    if (error) {
+      return NextResponse.json(
+        { error: "تعذر إرسال الطلب حالياً، يرجى المحاولة لاحقاً" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch {
+    return NextResponse.json(
+      { error: "تعذر إرسال الطلب حالياً، يرجى المحاولة لاحقاً" },
+      { status: 503 }
+    );
+  }
 }

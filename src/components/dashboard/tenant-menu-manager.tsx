@@ -139,23 +139,27 @@ export function TenantMenuManager({
     setUploading(true);
     try {
       const compressed = await compressImageFile(file);
-      const ext = compressed.name.split(".").pop() || "webp";
-      const filePath = `${tenant.id}/${folder}-${Date.now()}.${ext}`;
+      const formData = new FormData();
+      formData.append("file", compressed);
+      formData.append("folder", folder);
+      formData.append("tenantId", tenant.id);
 
-      const { error } = await supabase.storage
-        .from("menus-media")
-        .upload(filePath, compressed, { upsert: true });
+      const res = await fetch("/api/media/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
 
-      if (error) {
-        toast(`فشل رفع الصورة: ${error.message}`, "error");
+      if (!res.ok || !data?.url) {
+        toast(data?.error || "فشل رفع الصورة", "error");
         return null;
       }
 
-      const { data } = supabase.storage
-        .from("menus-media")
-        .getPublicUrl(filePath);
-      toast("تم ضغط الصورة ورفعها بنجاح!", "success");
-      return data.publicUrl;
+      toast("تم ضغط الصورة والتحقق منها ورفعها بنجاح!", "success");
+      return data.url as string;
+    } catch {
+      toast("تعذر الاتصال بخدمة رفع الصور", "error");
+      return null;
     } finally {
       setUploading(false);
     }

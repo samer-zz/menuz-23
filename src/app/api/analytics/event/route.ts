@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createAdminSupabase } from "@/lib/supabase/admin";
-import { enforceRateLimit, getClientIp, verifySameOrigin } from "@/lib/security";
+import {
+  buildRateLimitKey,
+  enforceRateLimit,
+  getClientIp,
+  verifySameOrigin,
+} from "@/lib/security";
 
 const metadataSchema = z
   .object({
@@ -25,19 +30,29 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "طلب غير مصرح به" }, { status: 403 });
   }
 
+  const body = await request.json().catch(() => null);
+  const parsed = eventSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "بيانات غير صالحة" }, { status: 400 });
+  }
+
   const ip = getClientIp(request);
-  const allowed = await enforceRateLimit(`analytics:${ip}`, 60, 60);
-  if (!allowed) {
+  const rl = await enforceRateLimit(
+    buildRateLimitKey("analytics", ip),
+    60,
+    60
+  );
+  if (rl.status === "rate_limited") {
     return NextResponse.json(
       { error: "تم تجاوز الحد المسموح للطلبات" },
       { status: 429 }
     );
   }
-
-  const body = await request.json().catch(() => null);
-  const parsed = eventSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: "بيانات غير صالحة" }, { status: 400 });
+  if (rl.status === "unavailable") {
+    return NextResponse.json(
+      { error: "خدمة التحقق الأمني غير متاحة مؤقتاً" },
+      { status: 503 }
+    );
   }
 
   try {
