@@ -4,16 +4,11 @@ import { SuperAdminClient } from "@/components/admin/super-admin-client";
 import type {
   AnalyticsEvent,
   AuditLog,
-  Category,
   ContactMessage,
-  MenuItem,
-  Offer,
   OrderFeedback,
   OrderRecord,
   Profile,
   Tenant,
-  TenantNotification,
-  Wallet,
 } from "@/types/database";
 
 export const dynamic = "force-dynamic";
@@ -39,11 +34,6 @@ export default async function AdminPage() {
   const [
     tenantsRes,
     profilesRes,
-    categoriesRes,
-    itemsRes,
-    offersRes,
-    walletsRes,
-    notificationsRes,
     eventsRes,
     auditRes,
     messagesRes,
@@ -58,31 +48,6 @@ export default async function AdminPage() {
       .select("*")
       .order("created_at", { ascending: false })
       .limit(300),
-    supabase
-      .from("categories")
-      .select("*")
-      .order("sort_order", { ascending: true })
-      .limit(1000),
-    supabase
-      .from("menu_items")
-      .select("*")
-      .order("sort_order", { ascending: true })
-      .limit(2000),
-    supabase
-      .from("offers")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(500),
-    supabase
-      .from("wallets")
-      .select("*")
-      .order("sort_order", { ascending: true })
-      .limit(500),
-    supabase
-      .from("notifications")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(200),
     supabase
       .from("analytics_events")
       .select("*")
@@ -148,11 +113,6 @@ export default async function AdminPage() {
       profile={profileData as Profile}
       tenants={(tenantsRes.data as Tenant[]) ?? []}
       profiles={(profilesRes.data as Profile[]) ?? []}
-      categories={(categoriesRes.data as Category[]) ?? []}
-      items={(itemsRes.data as MenuItem[]) ?? []}
-      offers={(offersRes.data as Offer[]) ?? []}
-      wallets={(walletsRes.data as Wallet[]) ?? []}
-      notifications={(notificationsRes.data as TenantNotification[]) ?? []}
       events={(eventsRes.data as AnalyticsEvent[]) ?? []}
       auditLogs={auditLogs}
       messages={(messagesRes.data as ContactMessage[]) ?? []}

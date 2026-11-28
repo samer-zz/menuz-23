@@ -72,10 +72,10 @@ export function SuperAdminClient({
   profile,
   tenants: initialTenants,
   profiles: initialProfiles,
-  categories: initialCategories,
-  items: initialItems,
-  offers: initialOffers,
-  wallets: initialWallets,
+  categories: initialCategories = [],
+  items: initialItems = [],
+  offers: initialOffers = [],
+  wallets: initialWallets = [],
   notifications: initialNotifications = [],
   events,
   auditLogs,
@@ -86,10 +86,10 @@ export function SuperAdminClient({
   profile: Profile;
   tenants: Tenant[];
   profiles: Profile[];
-  categories: Category[];
-  items: MenuItem[];
-  offers: Offer[];
-  wallets: Wallet[];
+  categories?: Category[];
+  items?: MenuItem[];
+  offers?: Offer[];
+  wallets?: Wallet[];
   notifications?: TenantNotification[];
   events: AnalyticsEvent[];
   auditLogs: AuditLog[];
@@ -108,9 +108,42 @@ export function SuperAdminClient({
   const [mustChange, setMustChange] = useState(profile.must_change_password);
   const [qrTenant, setQrTenant] = useState<Tenant | null>(null);
   const [managingTenant, setManagingTenant] = useState<Tenant | null>(null);
+  const [loadingTenantMenu, setLoadingTenantMenu] = useState(false);
+  const [managedMenu, setManagedMenu] = useState<{
+    tenantId: string;
+    categories: Category[];
+    items: MenuItem[];
+    offers: Offer[];
+    wallets: Wallet[];
+    notifications: TenantNotification[];
+  } | null>(null);
   const [tenantSearch, setTenantSearch] = useState("");
   const [tenantPage, setTenantPage] = useState(1);
   const TENANTS_PER_PAGE = 12;
+
+  const openManageTenant = async (t: Tenant) => {
+    setManagingTenant(t);
+    setLoadingTenantMenu(true);
+    setManagedMenu(null);
+    try {
+      const res = await fetch(
+        `/api/admin/tenant-menu?tenantId=${encodeURIComponent(t.id)}`
+      );
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
+        setManagedMenu({
+          tenantId: t.id,
+          categories: data.categories ?? [],
+          items: data.items ?? [],
+          offers: data.offers ?? [],
+          wallets: data.wallets ?? [],
+          notifications: data.notifications ?? [],
+        });
+      }
+    } finally {
+      setLoadingTenantMenu(false);
+    }
+  };
 
   // Tenant Create / Edit modal state
   const [tenantModalOpen, setTenantModalOpen] = useState(false);
@@ -505,31 +538,58 @@ export function SuperAdminClient({
                 </button>
               </div>
 
-              <TenantMenuManager
-                tenant={managingTenant}
-                isSuperAdmin
-                categories={initialCategories.filter(
-                  (c) => c.tenant_id === managingTenant.id
-                )}
-                items={initialItems.filter(
-                  (i) => i.tenant_id === managingTenant.id
-                )}
-                offers={initialOffers.filter(
-                  (o) => o.tenant_id === managingTenant.id
-                )}
-                wallets={initialWallets.filter(
-                  (w) => w.tenant_id === managingTenant.id
-                )}
-                notifications={initialNotifications.filter(
-                  (n) => n.tenant_id === managingTenant.id
-                )}
-                onTenantUpdated={(updated) => {
-                  setTenants((p) =>
-                    p.map((x) => (x.id === updated.id ? updated : x))
-                  );
-                  setManagingTenant(updated);
-                }}
-              />
+              {loadingTenantMenu ? (
+                <div className="rounded-3xl p-10 text-center glass-panel text-sm text-slate-400">
+                  جاري تحميل قائمة الجهة...
+                </div>
+              ) : (
+                <TenantMenuManager
+                  key={managingTenant.id + (managedMenu ? "-remote" : "-init")}
+                  tenant={managingTenant}
+                  isSuperAdmin
+                  categories={
+                    managedMenu?.tenantId === managingTenant.id
+                      ? managedMenu.categories
+                      : initialCategories.filter(
+                          (c) => c.tenant_id === managingTenant.id
+                        )
+                  }
+                  items={
+                    managedMenu?.tenantId === managingTenant.id
+                      ? managedMenu.items
+                      : initialItems.filter(
+                          (i) => i.tenant_id === managingTenant.id
+                        )
+                  }
+                  offers={
+                    managedMenu?.tenantId === managingTenant.id
+                      ? managedMenu.offers
+                      : initialOffers.filter(
+                          (o) => o.tenant_id === managingTenant.id
+                        )
+                  }
+                  wallets={
+                    managedMenu?.tenantId === managingTenant.id
+                      ? managedMenu.wallets
+                      : initialWallets.filter(
+                          (w) => w.tenant_id === managingTenant.id
+                        )
+                  }
+                  notifications={
+                    managedMenu?.tenantId === managingTenant.id
+                      ? managedMenu.notifications
+                      : initialNotifications.filter(
+                          (n) => n.tenant_id === managingTenant.id
+                        )
+                  }
+                  onTenantUpdated={(updated) => {
+                    setTenants((p) =>
+                      p.map((x) => (x.id === updated.id ? updated : x))
+                    );
+                    setManagingTenant(updated);
+                  }}
+                />
+              )}
             </div>
           ) : (
             (() => {
@@ -568,7 +628,7 @@ export function SuperAdminClient({
                       {demoTenant && (
                         <button
                           type="button"
-                          onClick={() => setManagingTenant(demoTenant)}
+                          onClick={() => openManageTenant(demoTenant)}
                           className="inline-flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-bold border border-brand-orange/40 bg-brand-orange/15 text-brand-orange hover:bg-brand-orange/25 transition"
                         >
                           <FlaskConical className="w-4 h-4" />
@@ -660,7 +720,7 @@ export function SuperAdminClient({
                         <div className="flex flex-wrap gap-2 pt-1">
                           <button
                             type="button"
-                            onClick={() => setManagingTenant(t)}
+                            onClick={() => openManageTenant(t)}
                             className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold bg-brand-orange/15 text-brand-orange border border-brand-orange/30"
                           >
                             <Utensils className="w-3.5 h-3.5" />
