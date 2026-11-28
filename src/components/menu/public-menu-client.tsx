@@ -244,13 +244,14 @@ export function PublicMenuClient({
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, "1");
 
-    const supabase = createClient();
-    supabase
-      .rpc("record_menu_event", {
-        p_tenant_id: tenant.id,
-        p_event_type: "menu_scan",
-      })
-      .then(() => {});
+    fetch("/api/analytics/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId: tenant.id,
+        eventType: "menu_scan",
+      }),
+    }).catch(() => {});
   }, [tenant.id, tenant.is_active]);
 
   // 5. Subscribe to Supabase Realtime for In-App Notifications
@@ -384,14 +385,15 @@ export function PublicMenuClient({
 
   const openItemDetail = (item: MenuItem) => {
     setSelectedItem(item);
-    const supabase = createClient();
-    supabase
-      .rpc("record_menu_event", {
-        p_tenant_id: tenant.id,
-        p_event_type: "item_view",
-        p_item_id: item.id,
-      })
-      .then(() => {});
+    fetch("/api/analytics/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId: tenant.id,
+        eventType: "item_view",
+        itemId: item.id,
+      }),
+    }).catch(() => {});
   };
 
   const copyText = async (text: string, id: string, label: string) => {
@@ -474,19 +476,20 @@ export function PublicMenuClient({
   const handleSendOrder = (channel: "whatsapp" | "sms") => {
     if (!validateCheckout()) return;
 
-    const supabase = createClient();
-    supabase
-      .rpc("record_menu_event", {
-        p_tenant_id: tenant.id,
-        p_event_type: "order_submit",
-        p_metadata: {
+    fetch("/api/analytics/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId: tenant.id,
+        eventType: "order_submit",
+        metadata: {
           channel,
           total: cartTotal,
           items_count: cartCount,
           payment_method: paymentMethod,
         },
-      })
-      .then(() => {});
+      }),
+    }).catch(() => {});
 
     const url =
       channel === "whatsapp"

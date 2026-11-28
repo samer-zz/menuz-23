@@ -29,7 +29,7 @@ import {
   Search,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { compressImageFile } from "@/lib/image-compress";
+import { compressImageFile, validateImageFile } from "@/lib/image-compress";
 import { useApp } from "@/components/providers/theme-provider";
 import { MenuzLogo } from "@/components/ui/brand-logo";
 import { AnalyticsCharts } from "@/components/dashboard/analytics-charts";
@@ -137,6 +137,12 @@ export function SuperAdminClient({
   };
 
   const uploadAdminMedia = async (file: File, folder: string) => {
+    const check = await validateImageFile(file);
+    if (!check.valid) {
+      toast(check.error, "error");
+      return null;
+    }
+
     setUploadingMedia(true);
     try {
       const compressed = await compressImageFile(file);
@@ -1024,7 +1030,7 @@ export function SuperAdminClient({
                 <span>{tLogoUrl ? "تغيير الشعار ✓" : "رفع شعار الجهة"}</span>
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                   onChange={async (e) => {
                     const f = e.target.files?.[0];
@@ -1039,7 +1045,7 @@ export function SuperAdminClient({
                 <span>{tCoverUrl ? "تغيير الغلاف ✓" : "رفع صورة الغلاف"}</span>
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                   onChange={async (e) => {
                     const f = e.target.files?.[0];

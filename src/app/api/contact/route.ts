@@ -1,13 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createAdminSupabase } from "@/lib/supabase/admin";
-import { verifySameOrigin } from "@/lib/security";
+import { enforceRateLimit, getClientIp, verifySameOrigin } from "@/lib/security";
 
 const contactSchema = z.object({
-  name: z.string().trim().min(2, "الاسم مطلوب"),
-  phone: z.string().trim().min(7, "رقم الهاتف مطلوب"),
-  business_name: z.string().trim().optional().default(""),
-  message: z.string().trim().min(5, "الرسالة مطلوبة"),
+  name: z.string().trim().min(2, "الاسم مطلوب").max(120, "الاسم طويل جداً"),
+  phone: z
+    .string()
+    .trim()
+    .min(7, "رقم الهاتف مطلوب")
+    .max(25, "رقم الهاتف طويل جداً")
+    .regex(/^[+0-9\s()-]{7,25}$/, "صيغة رقم الهاتف غير صالحة"),
+  business_name: z
+    .string()
+    .trim()
+    .max(120, "اسم النشاط طويل جداً")
+    .optional()
+    .default(""),
+  message: z
+    .string()
+    .trim()
+    .min(5, "الرسالة مطلوبة")
+    .max(1500, "الرسالة تتجاوز الحد الأقصى المسموح"),
+  website: z.string().max(120).optional().default(""),
 });
 
 export async function POST(request: NextRequest) {
@@ -27,6 +42,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: parsed.error.issues[0]?.message || "يرجى التأكد من البيانات" },
       { status: 400 }
+    );
+  }
+
+  // Honeypot anti-spam trap: silently accept bot submissions without persisting
+  if (parsed.data.website.trim().length > 0) {
+    return NextResponse.json({ ok: true });
+  }
+
+  const ip = getClientIp(request);
+  const allowed = await enforceRateLimit(`contact:${ip}`, 5, 900);
+  if (!allowed) {
+    return NextResponse.json(
+      { error: "تم تجاوز الحد المسموح للإرسال، يرجى المحاولة بعد 15 دقيقة" },
+      { status: 429 }
     );
   }
 

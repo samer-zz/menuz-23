@@ -23,9 +23,9 @@ async function requireSuperAdmin() {
 }
 
 const createAccountSchema = z.object({
-  email: z.string().trim().email("البريد الإلكتروني غير صالح"),
-  password: z.string().min(8),
-  fullName: z.string().trim().min(2, "الاسم مطلوب"),
+  email: z.string().trim().email("البريد الإلكتروني غير صالح").max(160),
+  password: z.string().min(8).max(128),
+  fullName: z.string().trim().min(2, "الاسم مطلوب").max(120),
   role: z.enum(["client_admin", "super_admin"]).default("client_admin"),
   tenantId: z.string().uuid().nullable().optional(),
 });
@@ -125,13 +125,15 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
   }
 
-  const userId = request.nextUrl.searchParams.get("id");
-  if (!userId || userId === actor.id) {
+  const rawUserId = request.nextUrl.searchParams.get("id");
+  const parsedId = z.string().uuid().safeParse(rawUserId);
+  if (!parsedId.success || parsedId.data === actor.id) {
     return NextResponse.json(
       { error: "لا يمكن حذف هذا الحساب" },
       { status: 400 }
     );
   }
+  const userId = parsedId.data;
 
   const admin = createAdminSupabase();
   const { error } = await admin.auth.admin.deleteUser(userId);

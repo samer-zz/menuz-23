@@ -17,7 +17,7 @@ import {
   Bell,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { compressImageFile } from "@/lib/image-compress";
+import { compressImageFile, validateImageFile } from "@/lib/image-compress";
 import { useApp } from "@/components/providers/theme-provider";
 import { EmptyStateCard } from "@/components/ui/skeletons";
 import { cn, formatArabicDate, formatPrice } from "@/lib/utils";
@@ -130,6 +130,12 @@ export function TenantMenuManager({
   const [savingSettings, setSavingSettings] = useState(false);
 
   const uploadMedia = async (file: File, folder: string): Promise<string | null> => {
+    const check = await validateImageFile(file);
+    if (!check.valid) {
+      toast(check.error, "error");
+      return null;
+    }
+
     setUploading(true);
     try {
       const compressed = await compressImageFile(file);
@@ -582,7 +588,7 @@ export function TenantMenuManager({
                       <span>{uploading ? "جاري الرفع..." : "رفع صورة"}</span>
                       <input
                         type="file"
-                        accept="image/*"
+                        accept="image/jpeg,image/png,image/webp"
                         className="hidden"
                         onChange={async (e) => {
                           const f = e.target.files?.[0];
@@ -1066,7 +1072,7 @@ export function TenantMenuManager({
                 <span>شعار المحفظة (اختياري)</span>
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                   onChange={async (e) => {
                     const f = e.target.files?.[0];

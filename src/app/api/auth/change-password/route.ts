@@ -6,7 +6,7 @@ import { validateStrongPassword } from "@/lib/utils";
 import { verifySameOrigin, writeAuditLog } from "@/lib/security";
 
 const schema = z.object({
-  newPassword: z.string().min(8),
+  newPassword: z.string().min(8).max(128),
 });
 
 export async function POST(request: NextRequest) {

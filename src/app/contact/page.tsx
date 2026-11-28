@@ -13,6 +13,7 @@ export default function ContactPage() {
   const [phone, setPhone] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [message, setMessage] = useState("");
+  const [website, setWebsite] = useState("");
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
 
@@ -28,6 +29,7 @@ export default function ContactPage() {
           phone,
           business_name: businessName,
           message,
+          website,
         }),
       });
       const data = await res.json();
@@ -145,6 +147,16 @@ export default function ContactPage() {
                   </div>
                 ) : (
                   <form onSubmit={handleSubmit} className="space-y-5">
+                    <div className="hidden" aria-hidden="true">
+                      <label htmlFor="contact-website">Website</label>
+                      <input
+                        id="contact-website"
+                        tabIndex={-1}
+                        autoComplete="off"
+                        value={website}
+                        onChange={(e) => setWebsite(e.target.value)}
+                      />
+                    </div>
                     <h2 className="text-xl font-extrabold mb-1">
                       نموذج طلب الخدمة والاستفسار
                     </h2>

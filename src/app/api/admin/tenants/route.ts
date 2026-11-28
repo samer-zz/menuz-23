@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createServerSupabase } from "@/lib/supabase/server";
-import { verifySameOrigin, writeAuditLog } from "@/lib/security";
+import { sanitizeSafeUrl, verifySameOrigin, writeAuditLog } from "@/lib/security";
 
 async function requireSuperAdmin() {
   const supabase = await createServerSupabase();
@@ -20,34 +20,52 @@ async function requireSuperAdmin() {
   return { user, supabase };
 }
 
+const safeOptionalUrl = z
+  .string()
+  .trim()
+  .max(500)
+  .optional()
+  .nullable()
+  .refine((val) => !val || sanitizeSafeUrl(val) !== null, {
+    message: "الرابط غير صالح أو غير آمن",
+  });
+
 const tenantSchema = z.object({
   id: z.string().uuid().optional(),
   slug: z
     .string()
     .trim()
     .toLowerCase()
+    .min(2)
+    .max(60)
     .regex(/^[a-z0-9-]+$/, "المعرف يجب أن يحتوي على حروف إنجليزية وأرقام وشرطات فقط"),
-  name_ar: z.string().trim().min(2, "الاسم بالعربية مطلوب"),
-  name_en: z.string().trim().optional().nullable(),
-  story: z.string().optional().nullable(),
-  description: z.string().optional().nullable(),
-  address: z.string().optional().nullable(),
-  phone: z.string().optional().nullable(),
-  whatsapp: z.string().optional().nullable(),
-  instagram: z.string().optional().nullable(),
-  facebook: z.string().optional().nullable(),
-  tiktok: z.string().optional().nullable(),
+  name_ar: z.string().trim().min(2, "الاسم بالعربية مطلوب").max(150),
+  name_en: z.string().trim().max(150).optional().nullable(),
+  story: z.string().max(1500).optional().nullable(),
+  description: z.string().max(600).optional().nullable(),
+  address: z.string().max(300).optional().nullable(),
+  phone: z.string().max(30).optional().nullable(),
+  whatsapp: z.string().max(30).optional().nullable(),
+  instagram: z.string().max(250).optional().nullable(),
+  facebook: z.string().max(250).optional().nullable(),
+  tiktok: z.string().max(250).optional().nullable(),
   has_delivery: z.boolean().default(true),
-  delivery_note: z.string().optional().nullable(),
-  logo_url: z.string().optional().nullable(),
-  cover_url: z.string().optional().nullable(),
-  primary_color: z.string().default("#0B2D5B"),
-  accent_color: z.string().default("#FF7A00"),
-  currency: z.string().default("ر.ي"),
+  delivery_note: z.string().max(300).optional().nullable(),
+  logo_url: safeOptionalUrl,
+  cover_url: safeOptionalUrl,
+  primary_color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, "صيغة اللون الأساسي غير صالحة")
+    .default("#0B2D5B"),
+  accent_color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, "صيغة اللون الثانوي غير صالحة")
+    .default("#FF7A00"),
+  currency: z.string().trim().min(1).max(20).default("ر.ي"),
   is_active: z.boolean().default(true),
   is_demo: z.boolean().optional(),
   seedDemoTemplate: z.boolean().optional(),
-  suspended_message: z.string().optional(),
+  suspended_message: z.string().max(500).optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -203,10 +221,12 @@ export async function DELETE(request: NextRequest) {
   const ctx = await requireSuperAdmin();
   if (!ctx) return NextResponse.json({ error: "غير مصرح" }, { status: 403 });
 
-  const id = request.nextUrl.searchParams.get("id");
-  if (!id) {
-    return NextResponse.json({ error: "معرف الجهة مطلوب" }, { status: 400 });
+  const rawId = request.nextUrl.searchParams.get("id");
+  const parsedId = z.string().uuid().safeParse(rawId);
+  if (!parsedId.success) {
+    return NextResponse.json({ error: "معرف الجهة غير صالح" }, { status: 400 });
   }
+  const id = parsedId.data;
 
   const { error } = await ctx.supabase.from("tenants").delete().eq("id", id);
   if (error) {

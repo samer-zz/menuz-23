@@ -12,7 +12,7 @@ export async function GET() {
 
     if (error) {
       return NextResponse.json(
-        { ok: false, error: error.message },
+        { ok: false, error: "Database check failed" },
         { status: 500 }
       );
     }
@@ -23,9 +23,9 @@ export async function GET() {
       tenants: count ?? 0,
       timestamp: new Date().toISOString(),
     });
-  } catch (err) {
+  } catch {
     return NextResponse.json(
-      { ok: false, error: err instanceof Error ? err.message : "Unknown error" },
+      { ok: false, error: "Service unavailable" },
       { status: 500 }
     );
   }

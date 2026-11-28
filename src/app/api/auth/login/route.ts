@@ -5,8 +5,8 @@ import { createAdminSupabase } from "@/lib/supabase/admin";
 import { verifySameOrigin } from "@/lib/security";
 
 const loginSchema = z.object({
-  email: z.string().trim().email("البريد الإلكتروني غير صالح"),
-  password: z.string().min(6, "كلمة المرور مطلوبة"),
+  email: z.string().trim().email("البريد الإلكتروني غير صالح").max(160),
+  password: z.string().min(6, "كلمة المرور مطلوبة").max(128),
 });
 
 const MAX_ATTEMPTS = 5;
